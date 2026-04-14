@@ -162,7 +162,7 @@ export class GoldPriceClient {
     const raw = await getJson<YahooChartResponse>(YAHOO_CHART_URL, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; xauusd-quant-bot/0.1.0)"
+        "User-Agent": "Mozilla/5.0 (compatible; xau-state-discord/0.1.0)"
       },
       timeoutMs: this.config.requestTimeoutMs,
       maxAttempts: this.config.requestMaxAttempts,
@@ -224,7 +224,7 @@ export class GoldPriceClient {
     const raw = await getJson<YahooChartResponse>(YAHOO_CHART_URL, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; xauusd-quant-bot/0.1.0)"
+        "User-Agent": "Mozilla/5.0 (compatible; xau-state-discord/0.1.0)"
       },
       timeoutMs: this.config.requestTimeoutMs,
       maxAttempts: this.config.requestMaxAttempts,

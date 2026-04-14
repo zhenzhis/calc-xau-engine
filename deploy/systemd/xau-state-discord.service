@@ -1,13 +1,13 @@
 [Unit]
-Description=XAUUSD Quantitative Analysis Discord Broadcaster
+Description=XAU State Discord Broadcaster
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/quant/calc/xauusd-quant-bot
+WorkingDirectory=/quant/calc/calc-xau-engine
 Environment=NODE_ENV=production
-EnvironmentFile=/quant/calc/config/xauusd-quant-bot.env
+EnvironmentFile=/quant/calc/config/xau-state-discord.env
 ExecStart=/usr/local/bin/node dist/main.js
 Restart=on-failure
 RestartSec=5
@@ -16,7 +16,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/quant/calc/data/xauusd-quant-bot
+ReadWritePaths=/quant/calc/data/xau-state-discord
 StandardOutput=journal
 StandardError=journal
 
