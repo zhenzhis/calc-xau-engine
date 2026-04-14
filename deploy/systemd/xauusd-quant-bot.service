@@ -1,0 +1,24 @@
+[Unit]
+Description=XAUUSD Quantitative Analysis Discord Broadcaster
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/quant/calc/xauusd-quant-bot
+EnvironmentFile=/quant/calc/config/xauusd-quant-bot.env
+ExecStart=/usr/local/bin/node dist/main.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xauusd-quant-bot
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/quant/calc/data/xauusd-quant-bot
+
+[Install]
+WantedBy=multi-user.target

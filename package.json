@@ -1,0 +1,21 @@
+{
+  "name": "xauusd-quant-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Quantitative XAUUSD analysis Discord broadcaster with static level grid and multi-factor scoring.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && node --env-file-if-exists=.env dist/main.js",
+    "dev": "npm run start",
+    "dry-run": "npm run build && node --env-file-if-exists=.env dist/cli/dry-run.js",
+    "test": "npm run build && node --test --test-isolation=none dist/runtime/market-hours.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "typescript": "^5.9.3"
+  }
+}
