@@ -1,15 +1,72 @@
 import { analyzeGold } from "../analysis/engine.js";
 import { GoldAnalysis, GoldPublishState } from "../analysis/types.js";
 import { GoldPriceClient, PriceBuffer } from "../data/client.js";
+import { activeZone } from "../levels/grid.js";
 import { buildDiscordPayload, publishToDiscord } from "../discord/webhook.js";
 import { Logger } from "../lib/logger.js";
 import { RuntimeConfig } from "../types.js";
-import { getGoldSession } from "./market-hours.js";
+import { getGoldTradingSession, GoldSessionName } from "./market-hours.js";
 import { PublishStateStore } from "./state-store.js";
+
+// ---------------------------------------------------------------------------
+// Event-driven trigger detection
+// ---------------------------------------------------------------------------
+
+interface PublishTrigger {
+  forced: boolean;
+  reason: string;
+}
+
+function detectTriggers(
+  current: GoldAnalysis,
+  previous: GoldPublishState | null
+): PublishTrigger {
+  if (!previous) return { forced: false, reason: "" };
+
+  // 1. Regime change
+  if (previous.regime !== current.regime) {
+    return { forced: true, reason: `regime: ${previous.regime} → ${current.regime}` };
+  }
+
+  // 2. Trend reversal
+  if (previous.trend !== current.trend) {
+    return { forced: true, reason: `trend: ${previous.trend} → ${current.trend}` };
+  }
+
+  // 3. Zone breach — price entered or exited an institutional zone
+  const prevZone = activeZone(previous.price);
+  const currZone = activeZone(current.price);
+  const prevZoneLabel = prevZone?.label ?? "none";
+  const currZoneLabel = currZone?.label ?? "none";
+  if (prevZoneLabel !== currZoneLabel) {
+    return { forced: true, reason: `zone: ${prevZoneLabel} → ${currZoneLabel}` };
+  }
+
+  // 4. Key level breach — price crossed a key support or resistance
+  if (previous.nearestResistance !== undefined && previous.nearestResistance !== current.nearestResistance?.price) {
+    const prevR = previous.nearestResistance;
+    if (current.price > prevR && previous.price < prevR) {
+      return { forced: true, reason: `突破阻力 ${prevR.toFixed(0)}` };
+    }
+  }
+  if (previous.nearestSupport !== undefined && previous.nearestSupport !== current.nearestSupport?.price) {
+    const prevS = previous.nearestSupport;
+    if (current.price < prevS && previous.price > prevS) {
+      return { forced: true, reason: `跌破支撑 ${prevS.toFixed(0)}` };
+    }
+  }
+
+  return { forced: false, reason: "" };
+}
+
+// ---------------------------------------------------------------------------
+// Broadcast Service — session-aware scheduling
+// ---------------------------------------------------------------------------
 
 export class BroadcastService {
   private latestAnalysis: GoldAnalysis | null = null;
   private lastPublishedAt = 0;
+  private currentSession: GoldSessionName = "weekend";
   private readonly buffer: PriceBuffer;
 
   constructor(
@@ -22,12 +79,13 @@ export class BroadcastService {
   }
 
   async pollOnce(): Promise<void> {
-    const session = getGoldSession(new Date(), this.config.marketTimezone);
+    const session = getGoldTradingSession(new Date(), this.config.marketTimezone);
+    this.currentSession = session.name;
+
     if (this.config.enableMarketHoursOnly && !session.isOpen) {
       this.latestAnalysis = null;
-      this.logger.debug("Skipping poll — gold market closed", {
-        reason: session.reason,
-        localDate: session.localDate,
+      this.logger.debug("Skipping poll — market closed", {
+        session: session.label,
         localTime: session.localTime
       });
       return;
@@ -35,85 +93,68 @@ export class BroadcastService {
 
     const quote = await this.client.fetchQuote();
 
-    // Push to rolling buffer
     this.buffer.push({
       price: quote.price,
       timestamp: quote.timestamp * 1000
     });
 
-    // Run analysis
     this.latestAnalysis = analyzeGold(quote, this.buffer);
 
-    this.logger.info("XAUUSD snapshot analyzed", {
+    this.logger.info("Snapshot analyzed", {
+      session: session.label,
       price: this.latestAnalysis.price,
       trend: this.latestAnalysis.trend,
       regime: this.latestAnalysis.regime,
-      momentum: this.latestAnalysis.momentum,
       confidence: this.latestAnalysis.confidence,
-      rsi: this.latestAnalysis.rsi14,
       bufferSize: this.buffer.length
     });
   }
 
   async maybePublish(): Promise<boolean> {
-    if (!this.latestAnalysis) {
-      this.logger.debug("Skipping publish — no analysis available");
-      return false;
-    }
+    if (!this.latestAnalysis) return false;
 
-    const session = getGoldSession(new Date(), this.config.marketTimezone);
-    if (this.config.enableMarketHoursOnly && !session.isOpen) {
-      return false;
-    }
+    const session = getGoldTradingSession(new Date(), this.config.marketTimezone);
+    if (this.config.enableMarketHoursOnly && !session.isOpen) return false;
 
     const now = Date.now();
     const previous = await this.store.read();
 
-    // Force publish on regime change
-    const regimeChanged = previous !== null && previous.regime !== this.latestAnalysis.regime;
-    if (regimeChanged) {
-      this.logger.warn("Regime change detected — forcing immediate publish", {
-        previousRegime: previous.regime,
-        currentRegime: this.latestAnalysis.regime
-      });
+    // ── Event-driven triggers (immediate publish) ──
+    const trigger = detectTriggers(this.latestAnalysis, previous);
+    if (trigger.forced) {
+      this.logger.warn(`Event trigger — ${trigger.reason}`);
     }
 
-    // Force publish on trend change
-    const trendChanged = previous !== null && previous.trend !== this.latestAnalysis.trend;
-    if (trendChanged) {
-      this.logger.warn("Trend change detected — forcing immediate publish", {
-        previousTrend: previous.trend,
-        currentTrend: this.latestAnalysis.trend
-      });
-    }
-
-    if (!regimeChanged && !trendChanged) {
-      const effectiveLast = Math.max(
-        this.lastPublishedAt,
-        previous?.publishedAtMs ?? 0
-      );
-      if (now - effectiveLast < this.config.publishIntervalMs) {
-        this.logger.debug("Skipping publish — interval not elapsed");
+    // ── Session-based interval check ──
+    if (!trigger.forced) {
+      const publishInterval = session.publishIntervalMs;
+      const effectiveLast = Math.max(this.lastPublishedAt, previous?.publishedAtMs ?? 0);
+      if (now - effectiveLast < publishInterval) {
+        this.logger.debug("Skipping publish — interval not elapsed", {
+          session: session.name,
+          intervalMs: publishInterval
+        });
         return false;
       }
     }
 
-    // Data freshness check
+    // ── Data freshness guard ──
     const analysisAgeMs = now - this.latestAnalysis.asOf * 1_000;
     if (analysisAgeMs > this.config.maxDataAgeMs) {
-      this.logger.warn("Skipping publish — stale data", {
-        asOf: this.latestAnalysis.asOf,
-        analysisAgeMs,
-        maxDataAgeMs: this.config.maxDataAgeMs
-      });
+      this.logger.warn("Skipping publish — stale data", { analysisAgeMs });
       return false;
     }
 
-    // Build and publish
-    const payload = buildDiscordPayload(this.latestAnalysis, previous);
+    // ── Build and publish ──
+    const payload = buildDiscordPayload(
+      this.latestAnalysis,
+      previous,
+      session.label,
+      trigger.forced ? trigger.reason : undefined
+    );
     await publishToDiscord(this.config, payload);
 
-    // Persist state
+    // ── Persist ──
     this.lastPublishedAt = now;
     const nextState: GoldPublishState = {
       asOf: this.latestAnalysis.asOf,
@@ -129,60 +170,65 @@ export class BroadcastService {
       nearestSupport: this.latestAnalysis.nearestSupport?.price
     };
     await this.store.write(nextState);
-
-    // Persist buffer
     await this.buffer.persist();
 
-    this.logger.info("Discord publish complete", {
+    this.logger.info("Published", {
+      session: session.label,
       price: this.latestAnalysis.price,
-      trend: this.latestAnalysis.trend,
-      regime: this.latestAnalysis.regime,
-      regimeChanged,
-      trendChanged
+      trigger: trigger.forced ? trigger.reason : "scheduled"
     });
 
     return true;
   }
 
   async runLoop(): Promise<never> {
-    // Restore price buffer from disk for warm restart
     await this.buffer.restore();
-    this.logger.info("Price buffer restored from disk", {
-      restoredPoints: this.buffer.length
-    });
+    this.logger.info("Buffer restored", { points: this.buffer.length });
 
-    // Seed buffer with Yahoo Finance intraday candles for immediate indicator coverage
     try {
       await this.client.seedBuffer(this.buffer);
     } catch (error) {
-      this.logger.warn("Buffer seeding failed — indicators will warm up over time", error);
+      this.logger.warn("Buffer seeding failed", error);
     }
 
-    this.logger.info("Starting XAUUSD Quantitative Analysis Broadcaster", {
-      pollIntervalMs: this.config.pollIntervalMs,
-      publishIntervalMs: this.config.publishIntervalMs,
-      publishStatePath: this.config.publishStatePath
+    const session = getGoldTradingSession(new Date(), this.config.marketTimezone);
+    this.logger.info("Starting XAU State Discord Broadcaster", {
+      session: session.label,
+      pollMs: session.pollIntervalMs,
+      publishMs: session.publishIntervalMs
     });
 
-    let nextPollAt = Date.now();
-
     for (;;) {
+      const loopStart = Date.now();
+
       try {
         await this.pollOnce();
         await this.maybePublish();
       } catch (error) {
-        this.logger.error("Broadcast loop iteration failed", error);
+        this.logger.error("Loop iteration failed", error);
       }
 
-      nextPollAt += this.config.pollIntervalMs;
-      const lagMs = Date.now() - nextPollAt;
-      if (lagMs > this.config.pollIntervalMs) {
-        this.logger.warn("Loop fell behind schedule; resetting clock", { lagMs });
-        nextPollAt = Date.now() + this.config.pollIntervalMs;
+      // ── Session-adaptive sleep ──
+      const currentSession = getGoldTradingSession(new Date(), this.config.marketTimezone);
+      const sleepMs = currentSession.isOpen
+        ? currentSession.pollIntervalMs
+        : 60_000; // check once per minute when closed
+
+      // Log session transitions
+      if (currentSession.name !== this.currentSession) {
+        this.logger.info("Session transition", {
+          from: this.currentSession,
+          to: currentSession.name,
+          label: currentSession.label,
+          pollMs: currentSession.pollIntervalMs,
+          publishMs: currentSession.publishIntervalMs
+        });
+        this.currentSession = currentSession.name;
       }
 
-      const sleepMs = Math.max(0, nextPollAt - Date.now());
-      await new Promise((resolve) => setTimeout(resolve, sleepMs));
+      const elapsed = Date.now() - loopStart;
+      const waitMs = Math.max(0, sleepMs - elapsed);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
 }

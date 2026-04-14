@@ -67,11 +67,11 @@ function signalEmoji(trend: TrendDirection, confidence: number): string {
 
 export function buildDiscordPayload(
   a: GoldAnalysis,
-  prev?: GoldPublishState | null
+  prev?: GoldPublishState | null,
+  sessionLabel?: string,
+  triggerReason?: string
 ): Record<string, unknown> {
   const sig = signalEmoji(a.trend, a.confidence);
-  const regimeChanged = prev && prev.regime !== a.regime;
-  const trendChanged = prev && prev.trend !== a.trend;
   const priceShift = prev ? a.price - prev.price : 0;
 
   // ── Header description ──
@@ -79,11 +79,14 @@ export function buildDiscordPayload(
     `${sig} **${fRegime(a.regime)} | ${fTrend(a.trend)} | 动能${fMomentum(a.momentum)}** (conf ${a.confidence})`,
   ];
 
-  if (regimeChanged) {
-    lines.push(`> **⚠ 行情切换: ${fRegime(prev!.regime)} → ${fRegime(a.regime)}**`);
+  // Session label
+  if (sessionLabel) {
+    lines.push(`**时段: ${sessionLabel}**`);
   }
-  if (trendChanged) {
-    lines.push(`> **⚠ 信号切换: ${fTrend(prev!.trend)} → ${fTrend(a.trend)}**`);
+
+  // Event trigger alert
+  if (triggerReason) {
+    lines.push(`> **⚡ EVENT: ${triggerReason}**`);
   }
 
   if (a.currentZone) {
