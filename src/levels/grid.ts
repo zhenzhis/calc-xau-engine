@@ -1,17 +1,21 @@
 // ---------------------------------------------------------------------------
 // XAUUSD Static Level Grid — Exact Chart Extraction
 //
-// Source: Manual chart analysis (TradingView XAUUSD, 2026-04-14)
-// Every level corresponds to a drawn line on the reference chart.
+// Source: Manual chart analysis (TradingView XAUUSD, 2026-04-15)
+// Every level and zone corresponds to a drawn line on the reference chart.
 //
 // Level categories:
-//   extreme     — Blue solid lines (structural highs/lows)
-//   zone        — Purple/Magenta filled regions (institutional S/D)
-//   transition  — Red dashed lines (regime boundary)
-//   pivot       — Gray dashed lines (intraday S/R pivot)
-//   indicator   — Green/Blue right-axis labels (MA cluster)
-//   key-support — Red solid lines (institutional floor)
-//   deep        — Red labels at chart bottom (swing low cluster)
+//   extreme     — Structural extremes (highest/lowest)
+//   zone-edge   — Edges of institutional supply/demand zones
+//   transition  — Regime boundary between supply & demand territory
+//   pivot       — Intraday S/R pivot
+//   key-support — Institutional floor / ceiling
+//   deep        — Deep structural support
+//
+// Zones (user-drawn rectangles):
+//   5225–5250, 5194–5218, 5135–5156           ← Supply
+//   5027–5061, 4989–5027, 4944–4966, 4857–4882 ← Transition / Pivot
+//   4745–4778, 4569–4581, 4485–4521           ← Demand
 //
 // ⚠ UPDATE when price establishes new structural levels.
 // ---------------------------------------------------------------------------
@@ -37,64 +41,67 @@ export interface PriceZone {
 // ---------------------------------------------------------------------------
 
 export const LEVELS: PriceLevel[] = [
-  // ── Extreme Resistance (blue solid) ──
-  { price: 5300,      category: "extreme",     type: "resistance", strength: 0.95, label: "极限阻力-5300" },
+  // ── Extreme / Top ──
+  { price: 5260,  category: "extreme",     type: "resistance", strength: 0.95, label: "极限阻力-5260" },
+  { price: 5250,  category: "zone-edge",   type: "resistance", strength: 0.92, label: "供给区I顶-5250" },
+  { price: 5225,  category: "zone-edge",   type: "resistance", strength: 0.88, label: "供给区I底-5225" },
 
-  // ── Supply Zone Edge Levels (purple zone) ──
-  { price: 5260.836,  category: "zone-edge",   type: "resistance", strength: 0.90, label: "供给区顶-5261" },
-  { price: 5250.547,  category: "zone-edge",   type: "resistance", strength: 0.90, label: "供给区上沿-5251" },
-  { price: 5200,      category: "zone-edge",   type: "resistance", strength: 0.88, label: "供给区中轴-5200" },
-  { price: 5150,      category: "zone-edge",   type: "resistance", strength: 0.85, label: "供给区下沿-5150" },
+  // ── Supply Zone II ──
+  { price: 5218,  category: "zone-edge",   type: "resistance", strength: 0.88, label: "供给区II顶-5218" },
+  { price: 5194,  category: "zone-edge",   type: "resistance", strength: 0.85, label: "供给区II底-5194" },
 
-  // ── Transition Resistance (red dashed) ──
-  { price: 5100,      category: "transition",  type: "resistance", strength: 0.78, label: "过渡阻力-5100" },
-  { price: 5050,      category: "transition",  type: "resistance", strength: 0.82, label: "过渡阻力-5050" },
+  // ── Supply Zone III ──
+  { price: 5156,  category: "zone-edge",   type: "resistance", strength: 0.82, label: "供给区III顶-5156" },
+  { price: 5135,  category: "zone-edge",   type: "resistance", strength: 0.80, label: "供给区III底-5135" },
 
-  // ── Mid-Range Pivots (gray dashed cluster) ──
-  { price: 5000,      category: "pivot",       type: "pivot",      strength: 0.80, label: "整数关口-5000" },
-  { price: 4950,      category: "pivot",       type: "pivot",      strength: 0.65, label: "枢轴-4950" },
-  { price: 4900,      category: "pivot",       type: "pivot",      strength: 0.72, label: "枢轴-4900" },
-  { price: 4850,      category: "pivot",       type: "pivot",      strength: 0.68, label: "枢轴-4850" },
+  // ── Upper Transition ──
+  { price: 5061,  category: "transition",  type: "resistance", strength: 0.78, label: "过渡区上顶-5061" },
+  { price: 5027,  category: "transition",  type: "pivot",      strength: 0.82, label: "关键枢轴-5027" },
+  { price: 4989,  category: "transition",  type: "pivot",      strength: 0.76, label: "过渡区下底-4989" },
 
-  // ── Moving Average Cluster (indicator labels) ──
-  { price: 4807.161,  category: "indicator",   type: "support",    strength: 0.75, label: "MA均线-4807" },
-  { price: 4787.711,  category: "indicator",   type: "support",    strength: 0.72, label: "MA均线-4788" },
-  { price: 4768.261,  category: "indicator",   type: "support",    strength: 0.70, label: "MA均线-4768" },
+  // ── Mid-Range Pivots ──
+  { price: 4966,  category: "pivot",       type: "pivot",      strength: 0.72, label: "枢轴区顶-4966" },
+  { price: 4944,  category: "pivot",       type: "pivot",      strength: 0.70, label: "枢轴区底-4944" },
+  { price: 4882,  category: "pivot",       type: "resistance", strength: 0.75, label: "近端阻力-4882" },
+  { price: 4857,  category: "pivot",       type: "support",    strength: 0.72, label: "近端支撑-4857" },
 
-  // ── Key Support (red solid + gray dashed) ──
-  { price: 4700,      category: "pivot",       type: "support",    strength: 0.75, label: "支撑-4700" },
-  { price: 4650,      category: "key-support", type: "support",    strength: 0.88, label: "关键支撑-4650" },
-  { price: 4630.457,  category: "key-support", type: "support",    strength: 0.90, label: "机构底线-4630" },
+  // ── Support Territory ──
+  { price: 4778,  category: "key-support", type: "support",    strength: 0.80, label: "支撑区顶-4778" },
+  { price: 4745,  category: "key-support", type: "support",    strength: 0.82, label: "支撑区底-4745" },
 
-  // ── Secondary Support (gray dashed) ──
-  { price: 4600,      category: "pivot",       type: "support",    strength: 0.68, label: "支撑-4600" },
-  { price: 4550,      category: "pivot",       type: "support",    strength: 0.65, label: "支撑-4550" },
-  { price: 4500,      category: "pivot",       type: "support",    strength: 0.78, label: "整数关口-4500" },
-  { price: 4450,      category: "pivot",       type: "support",    strength: 0.62, label: "支撑-4450" },
-  { price: 4400,      category: "pivot",       type: "support",    strength: 0.70, label: "支撑-4400" },
+  // ── Key Institutional Floor ──
+  { price: 4630,  category: "key-support", type: "support",    strength: 0.92, label: "机构防守-4630" },
 
-  // ── Deep Support Cluster (red labels at bottom) ──
-  { price: 4266.281,  category: "deep",        type: "support",    strength: 0.92, label: "深度支撑-4266" },
-  { price: 4257.600,  category: "deep",        type: "support",    strength: 0.92, label: "深度支撑-4258" },
-  { price: 4245.574,  category: "deep",        type: "support",    strength: 0.92, label: "深度支撑-4246" },
+  // ── Demand Zones ──
+  { price: 4581,  category: "key-support", type: "support",    strength: 0.78, label: "需求区I顶-4581" },
+  { price: 4569,  category: "key-support", type: "support",    strength: 0.80, label: "需求区I底-4569" },
+  { price: 4521,  category: "deep",        type: "support",    strength: 0.85, label: "需求区II顶-4521" },
+  { price: 4485,  category: "deep",        type: "support",    strength: 0.88, label: "需求区II底-4485" },
+
+  // ── Deep Support ──
+  { price: 4400,  category: "deep",        type: "support",    strength: 0.92, label: "极限支撑-4400" },
 ];
 
 // ---------------------------------------------------------------------------
-// Key Zones
+// Key Zones — user-drawn rectangles
 // ---------------------------------------------------------------------------
 
 export const ZONES: PriceZone[] = [
-  // Primary supply zone (purple/magenta band)
-  { min: 5150, max: 5261, type: "supply",      strength: 0.92, label: "主要供给区" },
+  // ── Supply ──
+  { min: 5225, max: 5250, type: "supply",      strength: 0.92, label: "供给区I" },
+  { min: 5194, max: 5218, type: "supply",      strength: 0.88, label: "供给区II" },
+  { min: 5135, max: 5156, type: "supply",      strength: 0.85, label: "供给区III" },
 
-  // Transition zone (red dashed + gray dashed cluster)
-  { min: 5000, max: 5100, type: "transition",   strength: 0.75, label: "过渡区" },
+  // ── Transition ──
+  { min: 5027, max: 5061, type: "transition",  strength: 0.78, label: "过渡区上" },
+  { min: 4989, max: 5027, type: "transition",  strength: 0.76, label: "过渡区下" },
+  { min: 4944, max: 4966, type: "transition",  strength: 0.70, label: "枢轴区" },
+  { min: 4857, max: 4882, type: "transition",  strength: 0.72, label: "近端枢轴" },
 
-  // Institutional floor zone (red solid lines)
-  { min: 4630, max: 4650, type: "demand",       strength: 0.90, label: "机构防守区" },
-
-  // Deep structural demand (red label cluster)
-  { min: 4245, max: 4267, type: "demand",       strength: 0.92, label: "结构底部" },
+  // ── Demand ──
+  { min: 4745, max: 4778, type: "demand",      strength: 0.82, label: "支撑区" },
+  { min: 4569, max: 4581, type: "demand",      strength: 0.80, label: "需求区I" },
+  { min: 4485, max: 4521, type: "demand",      strength: 0.88, label: "需求区II" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -137,14 +144,14 @@ export function strongestMagnet(price: number, sigma = 30): PriceLevel | null {
   return best;
 }
 
-/** Price position within the full level grid as a ratio (0 = deep support, 1 = extreme resistance). */
+/** Price position within the full level grid (0 = deep support, 1 = extreme resistance). */
 export function gridPosition(price: number): number {
   const lo = LEVELS[LEVELS.length - 1].price;
   const hi = LEVELS[0].price;
   return hi === lo ? 0.5 : Math.max(0, Math.min(1, (price - lo) / (hi - lo)));
 }
 
-/** Distance to nearest zone boundary (positive = above, negative = below). */
+/** Distance to nearest zone boundary. */
 export function distanceToNearestZone(price: number): { zone: PriceZone; distance: number; side: "above" | "below" | "inside" } | null {
   let best: ReturnType<typeof distanceToNearestZone> = null;
   for (const zone of ZONES) {

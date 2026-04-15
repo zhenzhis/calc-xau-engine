@@ -6,6 +6,7 @@ import {
   MomentumState,
   VolatilityRegime
 } from "../analysis/types.js";
+import type { HeadAndShouldersPattern } from "../analysis/patterns.js";
 import { RuntimeConfig } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -241,6 +242,33 @@ export function buildDiscordPayload(
     fields.push({
       name: "⚠ 布林挤压",
       value: `BB宽度 ${a.bbWidth.toFixed(3)}% — **潜在突破**\n%B: ${a.bbPercentB?.toFixed(2) ?? "—"}`
+    });
+  }
+
+  // H&S pattern alert
+  if (a.pattern) {
+    const p = a.pattern;
+    const dir = p.type === "bearish" ? "🔻 头肩顶 (看跌)" : "🔺 头肩底 (看涨)";
+    const phaseLabel = p.phase === "confirmed" ? "✅ 已确认突破" : "⏳ 形成中";
+    const tfLabel = { "1m": "1分钟", "5m": "5分钟", "15m": "15分钟" }[p.timeframe];
+
+    const hsLines: string[] = [
+      `**${dir}** │ ${tfLabel}级别 │ ${phaseLabel}`,
+      "```",
+      ` 左肩  $${p.leftShoulder.toFixed(0)}`,
+      ` 头部  $${p.head.toFixed(0)}`,
+      ` 右肩  $${p.rightShoulder.toFixed(0)}`,
+      ` 颈线  $${p.neckline.toFixed(0)}`,
+      ` 目标  $${p.target.toFixed(0)} (测量幅度)`,
+      ` ──────────────────────`,
+      ` 对称度 ${p.symmetry.toFixed(0)}%  颈线质量 ${p.necklineQuality.toFixed(0)}%`,
+      ` 综合质量 ${p.quality.toFixed(0)}%  置信加成 +${p.confidenceBoost.toFixed(0)}`,
+      "```"
+    ];
+
+    fields.push({
+      name: `📐 形态识别 (${tfLabel})`,
+      value: hsLines.join("\n")
     });
   }
 

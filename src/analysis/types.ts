@@ -1,4 +1,5 @@
 import { PriceLevel, PriceZone } from "../levels/grid.js";
+import { HeadAndShouldersPattern } from "./patterns.js";
 
 // ---------------------------------------------------------------------------
 // Market regime classification
@@ -85,6 +86,9 @@ export interface GoldAnalysis {
   // --- Actionable Signal ---
   signal: TradingSignal;
 
+  // --- Pattern Detection ---
+  pattern: HeadAndShouldersPattern | null;
+
   // --- Level Analysis ---
   nearestResistance: PriceLevel | null;
   nearestSupport: PriceLevel | null;
@@ -146,4 +150,5 @@ export interface GoldPublishState {
   bearTarget: number;
   nearestResistance?: number;
   nearestSupport?: number;
+  patternSignature?: string;  // e.g., "HS-bear-15m-confirmed" or undefined
 }

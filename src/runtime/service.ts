@@ -61,10 +61,23 @@ function detectTriggers(
     const severity = { low: 0, normal: 1, high: 2, extreme: 3 };
     const prevSev = severity[previous.volRegime] ?? 1;
     const currSev = severity[current.volRegime] ?? 1;
-    // Only trigger on significant shifts (≥2 levels) or entry into extreme
     if (Math.abs(currSev - prevSev) >= 2 || current.volRegime === "extreme") {
       return { forced: true, reason: `波动率: ${previous.volRegime} → ${current.volRegime}` };
     }
+  }
+
+  // 6. Head & Shoulders pattern — new detection or phase change
+  const currPatternSig = current.pattern
+    ? `HS-${current.pattern.type}-${current.pattern.timeframe}-${current.pattern.phase}`
+    : undefined;
+  if (currPatternSig && currPatternSig !== previous.patternSignature) {
+    const isConfirm = current.pattern?.phase === "confirmed";
+    return {
+      forced: true,
+      reason: isConfirm
+        ? `头肩形态确认 (${current.pattern!.timeframe} ${current.pattern!.type === "bearish" ? "顶" : "底"})`
+        : `头肩形态形成 (${current.pattern!.timeframe} ${current.pattern!.type === "bearish" ? "顶" : "底"})`
+    };
   }
 
   return { forced: false, reason: "" };
@@ -179,7 +192,10 @@ export class BroadcastService {
       bullTarget: this.latestAnalysis.bullTarget,
       bearTarget: this.latestAnalysis.bearTarget,
       nearestResistance: this.latestAnalysis.nearestResistance?.price,
-      nearestSupport: this.latestAnalysis.nearestSupport?.price
+      nearestSupport: this.latestAnalysis.nearestSupport?.price,
+      patternSignature: this.latestAnalysis.pattern
+        ? `HS-${this.latestAnalysis.pattern.type}-${this.latestAnalysis.pattern.timeframe}-${this.latestAnalysis.pattern.phase}`
+        : undefined
     };
     await this.store.write(nextState);
     await this.buffer.persist();

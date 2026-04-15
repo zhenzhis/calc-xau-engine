@@ -40,6 +40,7 @@ import {
   TimeframeSummary,
   TradingSignal
 } from "./types.js";
+import { detectHeadAndShoulders } from "./patterns.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -838,8 +839,20 @@ export function analyzeGold(
     hurstVal, vrVal, levelProximityScore, regime, volRegime
   );
 
+  // ── Pattern Detection (Head & Shoulders) ──
+  const patternResult = prices.length >= 30
+    ? detectHeadAndShoulders(prices, prices5m, prices15m)
+    : { headAndShoulders: null };
+  const pattern = patternResult.headAndShoulders;
+
+  // Apply pattern confidence boost
+  let finalConfidence = confidence;
+  if (pattern) {
+    finalConfidence = Math.round(clamp(confidence + pattern.confidenceBoost, 5, 98));
+  }
+
   // ── Actionable Signal ──
-  const signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal);
+  const signal = computeSignal(price, trend, trendScore, finalConfidence, atrVal, kamaVal);
 
   return {
     asOf: quote.timestamp,
@@ -877,6 +890,7 @@ export function analyzeGold(
     },
 
     signal,
+    pattern,
 
     nearestResistance: nearestRes,
     nearestSupport: nearestSup,
@@ -894,7 +908,7 @@ export function analyzeGold(
     rrLong,
     rrShort,
 
-    confidence,
+    confidence: finalConfidence,
 
     resistanceLevels: resistances.map(r => r.price),
     supportLevels: supports.map(s => s.price),
