@@ -56,6 +56,17 @@ function detectTriggers(
     }
   }
 
+  // 5. Volatility regime shift — e.g., normal → extreme
+  if (previous.volRegime && current.volRegime !== previous.volRegime) {
+    const severity = { low: 0, normal: 1, high: 2, extreme: 3 };
+    const prevSev = severity[previous.volRegime] ?? 1;
+    const currSev = severity[current.volRegime] ?? 1;
+    // Only trigger on significant shifts (≥2 levels) or entry into extreme
+    if (Math.abs(currSev - prevSev) >= 2 || current.volRegime === "extreme") {
+      return { forced: true, reason: `波动率: ${previous.volRegime} → ${current.volRegime}` };
+    }
+  }
+
   return { forced: false, reason: "" };
 }
 
@@ -163,6 +174,7 @@ export class BroadcastService {
       trend: this.latestAnalysis.trend,
       momentum: this.latestAnalysis.momentum,
       regime: this.latestAnalysis.regime,
+      volRegime: this.latestAnalysis.volRegime,
       confidence: this.latestAnalysis.confidence,
       bullTarget: this.latestAnalysis.bullTarget,
       bearTarget: this.latestAnalysis.bearTarget,

@@ -226,3 +226,183 @@ export function normalCdf(x: number): number {
 export function sigmoid(x: number, k: number, x0: number): number {
   return 1 / (1 + Math.exp(-k * (x - x0)));
 }
+
+// ---------------------------------------------------------------------------
+// Returns-Based Analysis — institutional standard
+// ---------------------------------------------------------------------------
+
+/** Log returns: r_t = ln(P_t / P_{t-1}). Foundational for all vol/momentum. */
+export function logReturns(prices: number[]): number[] {
+  const r: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    if (prices[i - 1] > 0 && prices[i] > 0) {
+      r.push(Math.log(prices[i] / prices[i - 1]));
+    }
+  }
+  return r;
+}
+
+/**
+ * Realized volatility from returns (sample stddev).
+ * NOT annualized — caller must scale by sqrt(periods_per_year) if needed.
+ */
+export function realizedVol(returns: number[], window?: number): number {
+  const s = window !== undefined ? returns.slice(-window) : returns;
+  if (s.length < 2) return 0;
+  const mu = s.reduce((a, r) => a + r, 0) / s.length;
+  const v = s.reduce((a, r) => a + (r - mu) ** 2, 0) / (s.length - 1);
+  return Math.sqrt(v);
+}
+
+/**
+ * Variance Ratio VR(q) — Lo-MacKinlay (1988).
+ * Compares q-period return variance to q × 1-period return variance.
+ *   VR > 1 → positive serial correlation (trending / momentum)
+ *   VR < 1 → negative serial correlation (mean-reverting)
+ *   VR ≈ 1 → random walk
+ */
+export function varianceRatio(prices: number[], q: number): number | null {
+  if (prices.length < q * 3) return null;
+
+  const r1: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    if (prices[i - 1] > 0) r1.push(Math.log(prices[i] / prices[i - 1]));
+  }
+
+  const rq: number[] = [];
+  for (let i = q; i < prices.length; i++) {
+    if (prices[i - q] > 0) rq.push(Math.log(prices[i] / prices[i - q]));
+  }
+
+  if (r1.length < 2 || rq.length < 2) return null;
+
+  const mu1 = r1.reduce((s, r) => s + r, 0) / r1.length;
+  const muQ = rq.reduce((s, r) => s + r, 0) / rq.length;
+  const var1 = r1.reduce((s, r) => s + (r - mu1) ** 2, 0) / (r1.length - 1);
+  const varQ = rq.reduce((s, r) => s + (r - muQ) ** 2, 0) / (rq.length - 1);
+
+  if (var1 === 0) return null;
+  return varQ / (q * var1);
+}
+
+/**
+ * Autocorrelation at lag k.
+ * ρ(k) = Cov(x_t, x_{t-k}) / Var(x_t).
+ * Positive → persistence, negative → reversion.
+ */
+export function autoCorrelation(series: number[], lag: number): number | null {
+  if (series.length < lag + 3) return null;
+
+  const n = series.length;
+  const mu = series.reduce((s, v) => s + v, 0) / n;
+
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    den += (series[i] - mu) ** 2;
+    if (i >= lag) {
+      num += (series[i] - mu) * (series[i - lag] - mu);
+    }
+  }
+
+  return den === 0 ? null : num / den;
+}
+
+/**
+ * Kaufman Adaptive Moving Average (KAMA).
+ * Adapts smoothing based on Efficiency Ratio: fast in trends, slow in noise.
+ * Superior to fixed-period EMA for non-stationary data.
+ */
+export function kama(
+  prices: number[],
+  erPeriod = 10,
+  fastPeriod = 2,
+  slowPeriod = 30
+): number | null {
+  if (prices.length < erPeriod + 1) return null;
+
+  const fastSC = 2 / (fastPeriod + 1);
+  const slowSC = 2 / (slowPeriod + 1);
+
+  let value = prices[erPeriod];
+
+  for (let i = erPeriod + 1; i < prices.length; i++) {
+    const direction = Math.abs(prices[i] - prices[i - erPeriod]);
+    let noise = 0;
+    for (let j = i - erPeriod + 1; j <= i; j++) {
+      noise += Math.abs(prices[j] - prices[j - 1]);
+    }
+
+    const er = noise > 0 ? direction / noise : 0;
+    const sc = (er * (fastSC - slowSC) + slowSC) ** 2;
+    value += sc * (prices[i] - value);
+  }
+
+  return value;
+}
+
+/**
+ * Downsample by taking every Nth point, aligned to the latest value.
+ * For multi-timeframe analysis: resample(prices, 5) → 5-minute bars.
+ */
+export function resample(values: number[], factor: number): number[] {
+  if (factor <= 1 || values.length < factor) return values.slice();
+
+  const result: number[] = [];
+  const startOffset = (values.length - 1) % factor;
+  for (let i = startOffset; i < values.length; i += factor) {
+    result.push(values[i]);
+  }
+  return result;
+}
+
+/**
+ * Bollinger Bands — bandwidth and %B.
+ * Low bandwidth → squeeze → imminent breakout.
+ * %B > 1 → above upper band (overbought), %B < 0 → below lower (oversold).
+ */
+export function bollingerBands(
+  prices: number[],
+  period = 20,
+  mult = 2
+): { width: number; percentB: number; upper: number; lower: number; middle: number } | null {
+  if (prices.length < period) return null;
+
+  const slice = prices.slice(-period);
+  const middle = slice.reduce((s, v) => s + v, 0) / period;
+  const sd = Math.sqrt(slice.reduce((s, v) => s + (v - middle) ** 2, 0) / period);
+
+  const upper = middle + mult * sd;
+  const lower = middle - mult * sd;
+  const price = prices[prices.length - 1];
+
+  const width = middle > 0 ? ((upper - lower) / middle) * 100 : 0;
+  const percentB = upper !== lower ? (price - lower) / (upper - lower) : 0.5;
+
+  return { width, percentB, upper, lower, middle };
+}
+
+/**
+ * Linear regression slope, normalized by mean (relative rate per bar).
+ * Robust trend-strength measure: positive → uptrend, negative → downtrend.
+ */
+export function linRegSlope(values: number[]): number | null {
+  const n = values.length;
+  if (n < 3) return null;
+
+  const mean = values.reduce((s, v) => s + v, 0) / n;
+  if (mean === 0) return null;
+
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += values[i];
+    sumXY += i * values[i];
+    sumX2 += i * i;
+  }
+
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+
+  return (n * sumXY - sumX * sumY) / denom / mean;
+}

@@ -1,8 +1,15 @@
-import { GoldAnalysis, GoldPublishState, MarketRegime, TrendDirection, MomentumState } from "../analysis/types.js";
+import {
+  GoldAnalysis,
+  GoldPublishState,
+  MarketRegime,
+  TrendDirection,
+  MomentumState,
+  VolatilityRegime
+} from "../analysis/types.js";
 import { RuntimeConfig } from "../types.js";
 
 // ---------------------------------------------------------------------------
-// Formatting — quantitative institution standard
+// Formatting primitives
 // ---------------------------------------------------------------------------
 
 function fp(v: number): string { return `$${v.toFixed(2)}`; }
@@ -10,7 +17,6 @@ function fpInt(v: number): string { return `$${v.toFixed(0)}`; }
 function fSigned(v: number): string { return `${v >= 0 ? "+" : ""}${v.toFixed(2)}`; }
 function fPct(v: number): string { return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`; }
 function fProb(v: number): string { return `${(v * 100).toFixed(0)}%`; }
-function fTs(sec: number): string { return `<t:${sec}:R>`; }
 function fTsFull(sec: number): string { return `<t:${sec}:f>`; }
 
 function fRegime(r: MarketRegime): string {
@@ -26,7 +32,14 @@ function fTrend(t: TrendDirection): string {
 }
 
 function fMomentum(m: MomentumState): string {
-  return m === "accelerating" ? "加速" : m === "steady" ? "稳定" : "衰减";
+  return m === "accelerating" ? "加速 ⚡" : m === "steady" ? "稳定" : "衰减";
+}
+
+function fVolRegime(v: VolatilityRegime): string {
+  const m: Record<VolatilityRegime, string> = {
+    low: "低波动", normal: "正常", high: "高波动 ⚠", extreme: "极端波动 🔥"
+  };
+  return m[v];
 }
 
 function embedColor(regime: MarketRegime, trend: TrendDirection): number {
@@ -34,6 +47,13 @@ function embedColor(regime: MarketRegime, trend: TrendDirection): number {
   if (trend === "bullish") return 0x3fb950;
   if (trend === "bearish") return 0xff7b72;
   return 0xd29922;
+}
+
+function signalEmoji(dir: "LONG" | "SHORT" | "FLAT", confidence: number): string {
+  if (confidence < 30) return "⬜";
+  if (dir === "LONG") return "🟢";
+  if (dir === "SHORT") return "🔴";
+  return "🟡";
 }
 
 function rsiTag(v: number | null): string {
@@ -50,19 +70,20 @@ function hurstTag(v: number | null): string {
   return `${v.toFixed(2)} 随机`;
 }
 
-// ---------------------------------------------------------------------------
-// Signal Direction
-// ---------------------------------------------------------------------------
+function vrTag(v: number | null): string {
+  if (v === null) return "—";
+  if (v > 1.15) return `${v.toFixed(2)} 持续`;
+  if (v < 0.85) return `${v.toFixed(2)} 反转`;
+  return `${v.toFixed(2)} 随机`;
+}
 
-function signalEmoji(trend: TrendDirection, confidence: number): string {
-  if (confidence < 40) return "⬜";
-  if (trend === "bullish") return "🟢";
-  if (trend === "bearish") return "🔴";
-  return "🟡";
+function tfIcon(aligned: boolean, trend: TrendDirection): string {
+  if (trend === "neutral") return "◽";
+  return aligned ? (trend === "bullish" ? "🟩" : "🟥") : "🟧";
 }
 
 // ---------------------------------------------------------------------------
-// Build Discord Embed
+// Build Discord Embed — institutional-grade alert
 // ---------------------------------------------------------------------------
 
 export function buildDiscordPayload(
@@ -71,160 +92,191 @@ export function buildDiscordPayload(
   sessionLabel?: string,
   triggerReason?: string
 ): Record<string, unknown> {
-  const sig = signalEmoji(a.trend, a.confidence);
-  const priceShift = prev ? a.price - prev.price : 0;
+  const sig = signalEmoji(a.signal.direction, a.confidence);
 
-  // ── Header description ──
-  const lines: string[] = [
-    `${sig} **${fRegime(a.regime)} | ${fTrend(a.trend)} | 动能${fMomentum(a.momentum)}** (conf ${a.confidence})`,
-  ];
+  // ── Title ──
+  const title = `XAUUSD │ ${fp(a.price)} (${fPct(a.dailyChangePct)}) │ ${sig} ${a.signal.direction}`;
 
-  // Session label
+  // ── Description: signal + context ──
+  const desc: string[] = [];
+
+  desc.push(
+    `${sig} **${fRegime(a.regime)} │ ${fTrend(a.trend)} │ 动能${fMomentum(a.momentum)}** (置信 ${a.confidence})`
+  );
+
   if (sessionLabel) {
-    lines.push(`**时段: ${sessionLabel}**`);
+    desc.push(`**时段: ${sessionLabel}** │ 波动率: ${fVolRegime(a.volRegime)}`);
   }
 
-  // Event trigger alert
   if (triggerReason) {
-    lines.push(`> **⚡ EVENT: ${triggerReason}**`);
+    desc.push(`> ⚡ **EVENT: ${triggerReason}**`);
   }
 
   if (a.currentZone) {
-    const zoneType = a.currentZone.type === "supply" ? "供给区" : a.currentZone.type === "demand" ? "需求区" : "过渡区";
-    lines.push(`**📍 所在区域: ${a.currentZone.label}** (${zoneType})`);
+    const zt = a.currentZone.type === "supply" ? "供给区" : a.currentZone.type === "demand" ? "需求区" : "过渡区";
+    desc.push(`📍 **所在区域: ${a.currentZone.label}** (${zt})`);
   }
 
-  lines.push(
-    "",
-    `多头目标 **${fp(a.bullTarget)}** ｜ 空头目标 **${fp(a.bearTarget)}**`,
-    `预期区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`,
-    "",
-    fTsFull(a.asOf)
-  );
-
-  // ── Field 1: 关键价位 ──
-  const priceRows: [string, string][] = [];
-
-  if (a.magnetLevel) {
-    priceRows.push(["Magnet", `${fp(a.magnetLevel.price)} (${a.magnetLevel.label})`]);
-  }
-  if (a.nearestResistance) {
-    priceRows.push(["Resistance", `${fp(a.nearestResistance.price)} [${a.nearestResistance.category}]`]);
-  }
-  if (a.nearestSupport) {
-    priceRows.push(["Support", `${fp(a.nearestSupport.price)} [${a.nearestSupport.category}]`]);
-  }
-  priceRows.push(
-    ["Bull Target", fp(a.bullTarget)],
-    ["Bear Target", fp(a.bearTarget)],
-    ["Range", `${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}`]
-  );
-
-  if (a.ema8 !== null) {
-    priceRows.push(["EMA 8/21/55", `${fp(a.ema8)} / ${a.ema21 ? fp(a.ema21) : "—"} / ${a.ema55 ? fp(a.ema55) : "—"}`]);
+  // Actionable signal block
+  if (a.signal.direction !== "FLAT") {
+    const dir = a.signal.direction === "LONG" ? "▲" : "▼";
+    desc.push("");
+    desc.push(`**${dir} 操作信号** (强度 ${a.signal.strength})`);
+    desc.push(
+      `入场 **${fp(a.signal.entry)}** │ 止损 **${fp(a.signal.stopLoss)}** │ R:R **${a.signal.riskReward.toFixed(1)}:1**`
+    );
+    if (a.signal.targets.length > 0) {
+      const tgtStr = a.signal.targets.map((t, i) => `T${i + 1} **${fpInt(t)}**`).join(" │ ");
+      desc.push(tgtStr);
+    }
   }
 
-  const pLW = Math.max(...priceRows.map(([l]) => l.length));
-  const pRW = Math.max(...priceRows.map(([, r]) => r.length));
-  const pBorder = `+${"─".repeat(pLW + 2)}+${"─".repeat(pRW + 2)}+`;
-  const priceTable = [
+  desc.push("");
+  if (a.expectedMove > 0) {
+    desc.push(`预期波动 **±${fp(a.expectedMove)}** │ 区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`);
+  } else {
+    desc.push(`区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`);
+  }
+  desc.push(fTsFull(a.asOf));
+
+  // ── Field 1: Multi-Timeframe Alignment ──
+  const tfLines: string[] = [
     "```",
-    pBorder,
-    ...priceRows.map(([l, r]) => `│ ${l.padEnd(pLW)} │ ${r.padEnd(pRW)} │`),
-    pBorder,
-    "```"
-  ].join("\n");
-
-  // ── Field 2: S/R levels ──
-  const srLines: string[] = [];
-  if (a.resistanceLevels.length > 0) {
-    srLines.push(`**R:** ${a.resistanceLevels.slice(0, 4).map(fpInt).join(" → ")}`);
-  }
-  if (a.supportLevels.length > 0) {
-    srLines.push(`**S:** ${a.supportLevels.slice(0, 4).map(fpInt).join(" → ")}`);
-  }
-
-  // ── Field 3: Quant metrics ──
-  const quantRows: [string, string][] = [
-    ["RSI(14)", rsiTag(a.rsi14)],
-    ["ATR", a.atr !== null ? fp(a.atr) : "—"],
-    ["Z-Score", a.zScore !== null ? fSigned(a.zScore) : "—"],
-    ["Hurst", hurstTag(a.hurst)],
-    ["P(Break ↑)", fProb(a.breakoutProbUp)],
-    ["P(Break ↓)", fProb(a.breakoutProbDown)],
-    ["R:R Long", `${a.rrLong.toFixed(1)}:1`],
-    ["R:R Short", `${a.rrShort.toFixed(1)}:1`],
+    " TF    信号    RSI    EMA   动能",
+    " ──── ────── ────── ──── ──────",
   ];
 
-  const qLW = Math.max(...quantRows.map(([l]) => l.length));
-  const qRW = Math.max(...quantRows.map(([, r]) => r.length));
-  const qBorder = `+${"─".repeat(qLW + 2)}+${"─".repeat(qRW + 2)}+`;
-  const quantTable = [
+  // 15m
+  tfLines.push(
+    ` 15M   ${fTrend(a.tf.m15.trend).padEnd(5)}  ${(a.tf.m15.rsi?.toFixed(1) ?? "  —").padStart(5)}  ${a.tf.m15.emaAligned ? " ✓ " : " ✗ "}  ${a.tf.m15.momentum > 0 ? "+" : ""}${a.tf.m15.momentum.toFixed(1)}σ`
+  );
+  // 5m
+  tfLines.push(
+    ` 5M    ${fTrend(a.tf.m5.trend).padEnd(5)}  ${(a.tf.m5.rsi?.toFixed(1) ?? "  —").padStart(5)}  ${a.tf.m5.emaAligned ? " ✓ " : " ✗ "}  ${a.tf.m5.momentum > 0 ? "+" : ""}${a.tf.m5.momentum.toFixed(1)}σ`
+  );
+
+  const confLevel = Math.abs(a.tf.confluence);
+  const confLabel = confLevel > 0.6 ? "强共振" : confLevel > 0.3 ? "弱共振" : "分歧";
+  tfLines.push(` ──── ────── ────── ──── ──────`);
+  tfLines.push(` 共振: ${a.tf.confluence > 0 ? "+" : ""}${a.tf.confluence.toFixed(2)} (${confLabel})`);
+  tfLines.push("```");
+
+  // ── Field 2: Key Levels Ladder ──
+  const ladder: string[] = ["```"];
+
+  // Resistances (top to bottom, max 3)
+  const rLevels = a.resistanceLevels.slice(0, 3).reverse();
+  for (let i = 0; i < rLevels.length; i++) {
+    const lvl = rLevels[i];
+    const level = findLevelInfo(lvl);
+    const tag = level ? ` ${level.label.split("-")[0]}` : "";
+    const magnetMark = a.magnetLevel && Math.abs(a.magnetLevel.price - lvl) < 1 ? " ★" : "";
+    ladder.push(` R${rLevels.length - i}  $${lvl.toFixed(0).padStart(5)}${tag}${magnetMark}`);
+  }
+
+  ladder.push(` ─── $${a.price.toFixed(0).padStart(5)}  NOW ───`);
+
+  // Supports (top to bottom, max 3)
+  const sLevels = a.supportLevels.slice(0, 3);
+  for (let i = 0; i < sLevels.length; i++) {
+    const lvl = sLevels[i];
+    const level = findLevelInfo(lvl);
+    const tag = level ? ` ${level.label.split("-")[0]}` : "";
+    const magnetMark = a.magnetLevel && Math.abs(a.magnetLevel.price - lvl) < 1 ? " ★" : "";
+    ladder.push(` S${i + 1}  $${lvl.toFixed(0).padStart(5)}${tag}${magnetMark}`);
+  }
+  ladder.push("```");
+
+  // ── Field 3: Quant Dashboard ──
+  const qRows: [string, string, string, string][] = [
+    ["RSI(14)", rsiTag(a.rsi14), "Hurst", hurstTag(a.hurst)],
+    ["RVol", a.realizedVol !== null ? `${a.realizedVol.toFixed(2)}%` : "—", "VR(5)", vrTag(a.varianceRatio)],
+    ["Z-Score", a.zScore !== null ? fSigned(a.zScore) : "—", "ACF(1)", a.autocorrelation !== null ? a.autocorrelation.toFixed(3) : "—"],
+    ["ATR", a.atr !== null ? fp(a.atr) : "—", "KAMA", a.kamaPrice !== null ? fpInt(a.kamaPrice) : "—"],
+    ["P(↑)", fProb(a.breakoutProbUp), "P(↓)", fProb(a.breakoutProbDown)],
+    ["R:R多", `${a.rrLong.toFixed(1)}:1`, "R:R空", `${a.rrShort.toFixed(1)}:1`],
+  ];
+
+  const col1W = Math.max(...qRows.map(r => r[0].length));
+  const col2W = Math.max(...qRows.map(r => r[1].length));
+  const col3W = Math.max(...qRows.map(r => r[2].length));
+  const col4W = Math.max(...qRows.map(r => r[3].length));
+
+  const qTable = [
     "```",
-    qBorder,
-    ...quantRows.map(([l, r]) => `│ ${l.padEnd(qLW)} │ ${r.padEnd(qRW)} │`),
-    qBorder,
+    ...qRows.map(([a, b, c, d]) =>
+      ` ${a.padEnd(col1W)}  ${b.padStart(col2W)}  │  ${c.padEnd(col3W)}  ${d.padStart(col4W)}`
+    ),
     "```"
   ].join("\n");
 
   // ── Field 4: Delta vs Previous ──
   let deltaField: string | null = null;
   if (prev) {
-    const dRows: [string, string][] = [
-      ["Price Δ", `${fSigned(priceShift)} (${prev.price.toFixed(0)} → ${a.price.toFixed(0)})`],
-      ["Trend", `${fTrend(prev.trend)} → ${fTrend(a.trend)}`],
-      ["Regime", `${fRegime(prev.regime)} → ${fRegime(a.regime)}`],
-      ["Conf", `${prev.confidence} → ${a.confidence}`],
-    ];
-    const dLW = Math.max(...dRows.map(([l]) => l.length));
-    const dRW = Math.max(...dRows.map(([, r]) => r.length));
-    const dBorder = `+${"-".repeat(dLW + 2)}+${"-".repeat(dRW + 2)}+`;
-    deltaField = [
+    const priceShift = a.price - prev.price;
+    const dLines: string[] = [
       "```",
-      dBorder,
-      ...dRows.map(([l, r]) => `| ${l.padEnd(dLW)} | ${r.padEnd(dRW)} |`),
-      dBorder,
+      ` Price  ${fSigned(priceShift)} (${prev.price.toFixed(0)} → ${a.price.toFixed(0)})`,
+      ` Trend  ${fTrend(prev.trend)} → ${fTrend(a.trend)}`,
+      ` Regime ${fRegime(prev.regime)} → ${fRegime(a.regime)}`,
+      ` Conf   ${prev.confidence} → ${a.confidence}`,
       "```"
-    ].join("\n");
+    ];
+    deltaField = dLines.join("\n");
   }
 
-  // ── Assemble fields ──
-  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-    { name: "关键价位", value: priceTable },
-  ];
+  // ── Assemble embed fields ──
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = [];
 
-  if (srLines.length > 0) {
-    fields.push({ name: "支撑 / 阻力", value: srLines.join("\n") });
-  }
-
-  fields.push({ name: "量化指标", value: quantTable });
+  fields.push({ name: "📊 时间框架共振", value: tfLines.join("\n") });
+  fields.push({ name: "📍 关键价位", value: ladder.join("\n") });
+  fields.push({ name: "🔬 量化仪表盘", value: qTable });
 
   if (deltaField) {
     fields.push({ name: "Δ 上次播报", value: deltaField });
   }
 
-  // ── Footer — machine-readable diagnostic line ──
+  // BB squeeze warning
+  if (a.bbWidth !== null && a.bbWidth < 0.3) {
+    fields.push({
+      name: "⚠ 布林挤压",
+      value: `BB宽度 ${a.bbWidth.toFixed(3)}% — **潜在突破**\n%B: ${a.bbPercentB?.toFixed(2) ?? "—"}`
+    });
+  }
+
+  // ── Footer — machine-readable diagnostic ──
   const footer = [
     `conf=${a.confidence}`,
     `regime=${a.regime}`,
+    `vol=${a.volRegime}`,
     `rsi=${a.rsi14?.toFixed(0) ?? "-"}`,
     `atr=${a.atr?.toFixed(1) ?? "-"}`,
-    `z=${a.zScore?.toFixed(2) ?? "-"}`,
+    `vr=${a.varianceRatio?.toFixed(2) ?? "-"}`,
     `hurst=${a.hurst?.toFixed(2) ?? "-"}`,
-    `ema_x=${a.drivers.emaCrossScore.toFixed(3)}`,
-    `zone=${a.drivers.zoneInfluence.toFixed(2)}`,
+    `nmom=${a.normalizedMomentum?.toFixed(1) ?? "-"}`,
+    `tf=${a.tf.confluence.toFixed(2)}`,
     `buf=${a.bufferSize}/${a.bufferDurationMin.toFixed(0)}m`,
   ].join(" │ ");
 
   return {
     embeds: [{
-      title: `XAUUSD │ ${fp(a.price)} (${fPct(a.dailyChangePct)}) │ ${fTrend(a.trend)}`,
-      description: lines.join("\n"),
+      title,
+      description: desc.join("\n"),
       color: embedColor(a.regime, a.trend),
       fields,
       footer: { text: footer },
     }]
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helper — find level info by price
+// ---------------------------------------------------------------------------
+
+import { LEVELS } from "../levels/grid.js";
+
+function findLevelInfo(price: number) {
+  return LEVELS.find(l => Math.abs(l.price - price) < 1) ?? null;
 }
 
 // ---------------------------------------------------------------------------

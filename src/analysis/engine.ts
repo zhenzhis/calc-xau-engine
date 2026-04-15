@@ -2,7 +2,6 @@ import { GoldQuote, PriceBuffer } from "../data/client.js";
 import {
   PriceLevel,
   LEVELS,
-  ZONES,
   resistancesAbove,
   supportsBelow,
   activeZone,
@@ -23,13 +22,23 @@ import {
   zScore,
   hurstExponent,
   sigmoid,
-  normalCdf
+  logReturns,
+  realizedVol,
+  varianceRatio,
+  autoCorrelation,
+  kama,
+  resample,
+  bollingerBands,
+  linRegSlope
 } from "../lib/math.js";
 import {
   GoldAnalysis,
   MarketRegime,
   TrendDirection,
-  MomentumState
+  MomentumState,
+  VolatilityRegime,
+  TimeframeSummary,
+  TradingSignal
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -44,11 +53,11 @@ const RSI_PERIOD = 14;
 const ATR_PERIOD = 14;
 const ZSCORE_PERIOD = 20;
 const HURST_MIN_POINTS = 20;
+const VR_PERIOD = 5;        // Variance ratio look-back multiplier
+const KAMA_ER_PERIOD = 10;  // KAMA efficiency ratio period
+const BB_PERIOD = 20;       // Bollinger Band period
 
-// ---------------------------------------------------------------------------
-// Category weight map — higher = stronger influence on targets & breakout
-// ---------------------------------------------------------------------------
-
+// Category weight: institutional levels influence targets and breakout scoring
 const CATEGORY_WEIGHT: Record<PriceLevel["category"], number> = {
   "extreme":     1.00,
   "zone-edge":   0.90,
@@ -60,163 +69,307 @@ const CATEGORY_WEIGHT: Record<PriceLevel["category"], number> = {
 };
 
 // ---------------------------------------------------------------------------
-// Regime Detection
+// Volatility Regime — returns-based
+// ---------------------------------------------------------------------------
+
+function classifyVolRegime(
+  currentVol: number,
+  historicalVol: number
+): VolatilityRegime {
+  if (historicalVol <= 0) return "normal";
+  const ratio = currentVol / historicalVol;
+  if (ratio < 0.5) return "low";
+  if (ratio < 1.5) return "normal";
+  if (ratio < 2.5) return "high";
+  return "extreme";
+}
+
+// ---------------------------------------------------------------------------
+// Regime Detection — multi-evidence synthesis
 // ---------------------------------------------------------------------------
 
 function detectRegime(
   prices: number[],
-  atrVal: number | null,
-  rsiVal: number | null,
+  returns: number[],
   emaFast: number | null,
   emaMid: number | null,
   emaSlow: number | null,
-  hurst: number | null
+  rsiVal: number | null,
+  hurst: number | null,
+  vrVal: number | null,
+  volRegime: VolatilityRegime
 ): MarketRegime {
-  // Volatility assessment
-  const sd = stddev(prices, Math.min(20, prices.length));
-  const meanPrice = sma(prices, Math.min(20, prices.length));
-  const normalizedVol = sd !== null && meanPrice !== null && meanPrice > 0
-    ? sd / meanPrice
-    : 0;
+  // Extreme volatility overrides everything
+  if (volRegime === "extreme") return "volatile";
+  if (volRegime === "high") {
+    // High vol can still be trending if structure is clear
+    const aligned =
+      emaFast !== null && emaMid !== null && emaSlow !== null &&
+      ((emaFast > emaMid && emaMid > emaSlow) ||
+       (emaFast < emaMid && emaMid < emaSlow));
+    if (!aligned) return "volatile";
+  }
 
-  // High volatility regime
-  if (normalizedVol > 0.008) return "volatile";
+  // Evidence accumulation for regime
+  let trendEvidence = 0;   // positive = trending, negative = ranging/reverting
+  let consolEvidence = 0;  // positive = consolidation
 
-  // EMA alignment for trend detection
+  // 1. EMA alignment — strongest structural trend signal
   if (emaFast !== null && emaMid !== null && emaSlow !== null) {
-    const allAlignedUp = emaFast > emaMid && emaMid > emaSlow;
-    const allAlignedDown = emaFast < emaMid && emaMid < emaSlow;
-
-    // Strong trend: EMAs aligned AND hurst suggests persistence
-    if (allAlignedUp && (hurst === null || hurst > 0.5)) return "trending-up";
-    if (allAlignedDown && (hurst === null || hurst > 0.5)) return "trending-down";
+    if (emaFast > emaMid && emaMid > emaSlow) trendEvidence += 2;
+    else if (emaFast < emaMid && emaMid < emaSlow) trendEvidence += 2;
+    else trendEvidence -= 1;
   }
 
-  // Consolidation: low volatility + RSI near 50
-  if (normalizedVol < 0.002 && rsiVal !== null && rsiVal > 40 && rsiVal < 60) {
-    return "consolidation";
+  // 2. Variance ratio — statistical trending test
+  if (vrVal !== null) {
+    if (vrVal > 1.15) trendEvidence += 1.5;       // Strong serial correlation
+    else if (vrVal > 1.05) trendEvidence += 0.5;
+    else if (vrVal < 0.85) trendEvidence -= 1.5;   // Mean-reverting
+    else if (vrVal < 0.95) trendEvidence -= 0.5;
   }
+
+  // 3. Hurst exponent — long-range dependence
+  if (hurst !== null) {
+    if (hurst > 0.6) trendEvidence += 1;
+    else if (hurst < 0.4) trendEvidence -= 1;
+  }
+
+  // 4. RSI in dead zone = consolidation
+  if (rsiVal !== null && rsiVal > 42 && rsiVal < 58) {
+    consolEvidence += 1;
+  }
+
+  // 5. Low volatility = consolidation
+  if (volRegime === "low") consolEvidence += 1.5;
+
+  // 6. Linear regression slope — structural direction
+  const slope = linRegSlope(prices.slice(-30));
+  if (slope !== null) {
+    if (Math.abs(slope) > 0.0001) trendEvidence += 0.5;
+    else consolEvidence += 0.5;
+  }
+
+  // Decision
+  if (trendEvidence >= 2.5) {
+    const price = prices[prices.length - 1];
+    if (emaFast !== null && emaMid !== null) {
+      return emaFast > emaMid ? "trending-up" : "trending-down";
+    }
+    // Fallback: use price vs short SMA
+    const sma20 = sma(prices, Math.min(20, prices.length));
+    return sma20 !== null && price > sma20 ? "trending-up" : "trending-down";
+  }
+
+  if (consolEvidence >= 2) return "consolidation";
 
   return "ranging";
 }
 
 // ---------------------------------------------------------------------------
-// Trend Detection — multi-factor scoring
+// Single-Timeframe Trend Score — returns [-1, 1]
 // ---------------------------------------------------------------------------
 
-function detectTrend(
+function tfTrendScore(
   prices: number[],
   emaFast: number | null,
   emaMid: number | null,
-  emaSlow: number | null,
-  rsiVal: number | null,
-  zScoreVal: number | null
-): { trend: TrendDirection; emaCrossScore: number } {
+  rsiVal: number | null
+): number {
+  if (prices.length < 3) return 0;
+
   const price = prices[prices.length - 1];
   let score = 0;
+  let weight = 0;
 
-  // Factor 1: EMA alignment (weight 0.35)
-  if (emaFast !== null && emaMid !== null) {
-    const emaDiff = (emaFast - emaMid) / Math.max(Math.abs(emaMid) * 0.001, 1);
-    score += clamp(emaDiff, -1, 1) * 0.35;
+  // EMA alignment
+  if (emaFast !== null && emaMid !== null && emaMid !== 0) {
+    const spread = (emaFast - emaMid) / (Math.abs(emaMid) * 0.005); // Normalize by 0.5%
+    score += clamp(spread, -1, 1) * 0.45;
+    weight += 0.45;
   }
 
-  // Factor 2: Price vs slow EMA (weight 0.25)
-  if (emaSlow !== null) {
-    const distFromSlow = (price - emaSlow) / Math.max(Math.abs(emaSlow) * 0.003, 1);
-    score += clamp(distFromSlow, -1, 1) * 0.25;
+  // Price vs EMA mid
+  if (emaMid !== null && emaMid !== 0) {
+    const priceBias = (price - emaMid) / (Math.abs(emaMid) * 0.005);
+    score += clamp(priceBias, -1, 1) * 0.25;
+    weight += 0.25;
   }
 
-  // Factor 3: RSI directional bias (weight 0.20)
+  // RSI bias
   if (rsiVal !== null) {
-    const rsiBias = (rsiVal - 50) / 50; // -1 to +1
-    score += rsiBias * 0.20;
+    score += ((rsiVal - 50) / 50) * 0.20;
+    weight += 0.20;
   }
 
-  // Factor 4: Z-score (weight 0.20)
-  if (zScoreVal !== null) {
-    score += clamp(zScoreVal / 2, -1, 1) * 0.20;
+  // Slope of last 10 bars
+  const slope = linRegSlope(prices.slice(-10));
+  if (slope !== null) {
+    score += clamp(slope * 2000, -1, 1) * 0.10;
+    weight += 0.10;
   }
 
-  const emaCrossScore = score;
-
-  if (score > 0.12) return { trend: "bullish", emaCrossScore };
-  if (score < -0.12) return { trend: "bearish", emaCrossScore };
-  return { trend: "neutral", emaCrossScore };
+  return weight > 0 ? score / weight * Math.min(weight / 0.5, 1) : 0;
 }
 
 // ---------------------------------------------------------------------------
-// Momentum Detection
+// Multi-Timeframe Trend — weighted confluence across 1m, 5m, 15m
+// ---------------------------------------------------------------------------
+
+function analyzeTF(
+  prices: number[],
+  returns: number[]
+): TimeframeSummary {
+  const emaF = ema(prices, EMA_FAST);
+  const emaM = ema(prices, EMA_MID);
+  const rsiVal = prices.length >= RSI_PERIOD + 1 ? rsi(prices, RSI_PERIOD) : null;
+
+  const score = tfTrendScore(prices, emaF, emaM, rsiVal);
+  const trend: TrendDirection =
+    score > 0.15 ? "bullish" : score < -0.15 ? "bearish" : "neutral";
+
+  const aligned = emaF !== null && emaM !== null &&
+    ((trend === "bullish" && emaF > emaM) || (trend === "bearish" && emaF < emaM));
+
+  // Normalized momentum: last ROC / realized vol (sigma units)
+  const lookback = Math.min(5, prices.length - 1);
+  const r = roc(prices, lookback);
+  const rv = realizedVol(returns, Math.min(20, returns.length));
+  const normMom = r !== null && rv > 0 ? r / rv : 0;
+
+  return { trend, rsi: rsiVal !== null ? roundTo(rsiVal, 1) : null, emaAligned: aligned, momentum: roundTo(normMom, 2) };
+}
+
+function detectTrend(
+  score1m: number,
+  tf5m: TimeframeSummary,
+  tf15m: TimeframeSummary,
+  zScoreVal: number | null,
+  vrVal: number | null,
+  normMomentum: number | null
+): { trend: TrendDirection; score: number } {
+  // Multi-timeframe weighted score
+  // Higher timeframes get more weight (noise filtering)
+  let score = 0;
+  let totalWeight = 0;
+
+  // 15m trend (dominant weight)
+  const score15m = tf15m.trend === "bullish" ? 1 : tf15m.trend === "bearish" ? -1 : 0;
+  score += score15m * (tf15m.emaAligned ? 1.0 : 0.6) * 0.30;
+  totalWeight += 0.30;
+
+  // 5m trend
+  const score5m = tf5m.trend === "bullish" ? 1 : tf5m.trend === "bearish" ? -1 : 0;
+  score += score5m * (tf5m.emaAligned ? 1.0 : 0.6) * 0.25;
+  totalWeight += 0.25;
+
+  // 1m trend score (raw from indicators)
+  score += clamp(score1m, -1, 1) * 0.15;
+  totalWeight += 0.15;
+
+  // Z-score contribution
+  if (zScoreVal !== null) {
+    score += clamp(zScoreVal / 2.5, -1, 1) * 0.10;
+    totalWeight += 0.10;
+  }
+
+  // Variance ratio directional bias
+  if (vrVal !== null) {
+    // VR > 1 amplifies existing trend, VR < 1 dampens
+    const vrAmplifier = vrVal > 1 ? Math.min(vrVal - 1, 0.5) : -Math.min(1 - vrVal, 0.3);
+    score += Math.sign(score) * vrAmplifier * 0.10;
+    totalWeight += 0.10;
+  }
+
+  // Normalized momentum
+  if (normMomentum !== null) {
+    score += clamp(normMomentum / 3, -1, 1) * 0.10;
+    totalWeight += 0.10;
+  }
+
+  const finalScore = totalWeight > 0 ? score / totalWeight : 0;
+
+  const trend: TrendDirection =
+    finalScore > 0.12 ? "bullish" : finalScore < -0.12 ? "bearish" : "neutral";
+
+  return { trend, score: finalScore };
+}
+
+// ---------------------------------------------------------------------------
+// Momentum — vol-normalized (sigma units)
 // ---------------------------------------------------------------------------
 
 function detectMomentum(
-  prices: number[]
-): { momentum: MomentumState; momentumScore: number } {
-  if (prices.length < 10) {
-    return { momentum: "steady", momentumScore: 0 };
+  prices: number[],
+  returns: number[]
+): { momentum: MomentumState; score: number } {
+  if (prices.length < 10 || returns.length < 10) {
+    return { momentum: "steady", score: 0 };
   }
 
-  // Multi-timeframe rate of change
-  const rocShort = roc(prices, 3) ?? 0;   // ~3 min at 60s poll
-  const rocMid = roc(prices, 8) ?? 0;     // ~8 min
-  const rocLong = roc(prices, 20) ?? 0;   // ~20 min
+  const rv = realizedVol(returns, Math.min(30, returns.length));
+  if (rv <= 0) return { momentum: "steady", score: 0 };
 
-  // Composite momentum (recent changes weighted more)
-  const composite = Math.abs(rocShort) * 0.5 + Math.abs(rocMid) * 0.3 + Math.abs(rocLong) * 0.2;
+  // Multi-horizon normalized momentum (in sigma units)
+  const roc3 = roc(prices, 3);
+  const roc8 = roc(prices, 8);
+  const roc20 = prices.length > 20 ? roc(prices, 20) : null;
 
-  // Acceleration: is momentum increasing or decreasing?
-  const acceleration = Math.abs(rocShort) - Math.abs(rocMid);
+  const norm3 = roc3 !== null ? Math.abs(roc3) / rv : 0;
+  const norm8 = roc8 !== null ? Math.abs(roc8) / rv : 0;
+  const norm20 = roc20 !== null ? Math.abs(roc20) / rv : 0;
 
-  const momentumScore = composite * 1000; // Scale to more readable range
+  // Composite: recent weighted more
+  const composite = norm3 * 0.5 + norm8 * 0.3 + (roc20 !== null ? norm20 * 0.2 : norm8 * 0.2);
 
-  if (acceleration > 0.0002 && composite > 0.0005) return { momentum: "accelerating", momentumScore };
-  if (composite < 0.0002) return { momentum: "decaying", momentumScore };
-  return { momentum: "steady", momentumScore };
+  // Acceleration: is short-term momentum exceeding medium-term?
+  const acceleration = norm3 - norm8;
+
+  // In sigma units: > 1.5σ with acceleration = accelerating
+  if (acceleration > 0.3 && composite > 1.2) return { momentum: "accelerating", score: composite };
+  if (composite < 0.4) return { momentum: "decaying", score: composite };
+  return { momentum: "steady", score: composite };
 }
 
 // ---------------------------------------------------------------------------
-// Level Proximity Analysis — uses gridPosition + distanceToNearestZone
+// Level Proximity — ATR-adaptive sigma
 // ---------------------------------------------------------------------------
 
-function analyzeLevelProximity(price: number): {
+function analyzeLevelProximity(
+  price: number,
+  atrVal: number | null
+): {
   levelProximityScore: number;
   zoneInfluence: number;
 } {
-  // Aggregate proximity to all levels (higher = closer to key levels)
-  const sigma = 10; // Gold points
-  let maxProximity = 0;
+  // Adaptive sigma: use ATR if available, else default
+  const sigma = atrVal !== null && atrVal > 0 ? Math.max(atrVal * 1.5, 5) : 12;
 
+  let maxProximity = 0;
   for (const level of LEVELS) {
-    // Weight proximity by both strength and category importance
     const catWeight = CATEGORY_WEIGHT[level.category];
     const prox = proximityWeight(price, level.price, sigma) * level.strength * catWeight;
     maxProximity = Math.max(maxProximity, prox);
   }
 
-  // Zone influence via distanceToNearestZone
+  // Zone influence
   let zoneInfluence = 0;
   const zone = activeZone(price);
 
   if (zone) {
-    // Price is inside a zone
     const zoneWidth = zone.max - zone.min;
-    const positionInZone = (price - zone.min) / zoneWidth; // 0 = bottom, 1 = top
+    const positionInZone = (price - zone.min) / zoneWidth;
     const zoneSign = zone.type === "demand" ? 1 : zone.type === "supply" ? -1 : 0;
-
-    // Stronger effect when price is deeper into the zone
-    const depth = zone.type === "demand"
-      ? (1 - positionInZone) // closer to bottom = stronger demand
-      : positionInZone;      // closer to top = stronger supply
+    const depth = zone.type === "demand" ? (1 - positionInZone) : positionInZone;
     zoneInfluence = zoneSign * zone.strength * (0.5 + 0.5 * depth);
   } else {
-    // Price outside all zones — use distanceToNearestZone for approach detection
     const nearest = distanceToNearestZone(price);
-    if (nearest && Math.abs(nearest.distance) < 30) {
+    if (nearest && Math.abs(nearest.distance) < (atrVal ?? 15) * 3) {
       const approachSign =
         nearest.zone.type === "demand" ? 1
         : nearest.zone.type === "supply" ? -1
         : 0;
-      const approachWeight = Math.exp(-Math.abs(nearest.distance) / 10)
+      const approachWeight = Math.exp(-Math.abs(nearest.distance) / (sigma * 1.5))
         * nearest.zone.strength * 0.5;
       zoneInfluence = approachSign * approachWeight;
     }
@@ -229,59 +382,54 @@ function analyzeLevelProximity(price: number): {
 }
 
 // ---------------------------------------------------------------------------
-// Target Price Computation — category-weighted targeting
+// Targets — category-weighted with ATR scaling
 // ---------------------------------------------------------------------------
 
 function computeTargets(
   price: number,
   trend: TrendDirection,
-  atrVal: number | null,
+  expectedMove: number,
   regime: MarketRegime
 ): { bullTarget: number; bearTarget: number; expectedRange: { min: number; max: number } } {
   const resistances = resistancesAbove(price, 3);
   const supports = supportsBelow(price, 3);
 
-  // Bull target: nearest resistances weighted by proximity, strength, and category
-  let bullTarget = price + 15; // default if no resistance found
+  // Bull target: category-weighted average of nearest resistances
+  let bullTarget = price + Math.max(expectedMove, 10) * 2;
   if (resistances.length > 0) {
-    const weighted = resistances.map((r, i) => {
-      const catWeight = CATEGORY_WEIGHT[r.category];
-      return {
-        price: r.price,
-        weight: r.strength * catWeight * (1 / (i + 1))
-      };
-    });
-    const totalWeight = weighted.reduce((s, w) => s + w.weight, 0);
-    bullTarget = totalWeight > 0
-      ? weighted.reduce((s, w) => s + w.price * w.weight, 0) / totalWeight
+    const weighted = resistances.map((r, i) => ({
+      price: r.price,
+      weight: r.strength * CATEGORY_WEIGHT[r.category] * (1 / (i + 1))
+    }));
+    const total = weighted.reduce((s, w) => s + w.weight, 0);
+    bullTarget = total > 0
+      ? weighted.reduce((s, w) => s + w.price * w.weight, 0) / total
       : resistances[0].price;
   }
 
-  // Bear target: nearest supports weighted by proximity, strength, and category
-  let bearTarget = price - 15;
+  // Bear target: category-weighted average of nearest supports
+  let bearTarget = price - Math.max(expectedMove, 10) * 2;
   if (supports.length > 0) {
-    const weighted = supports.map((s, i) => {
-      const catWeight = CATEGORY_WEIGHT[s.category];
-      return {
-        price: s.price,
-        weight: s.strength * catWeight * (1 / (i + 1))
-      };
-    });
-    const totalWeight = weighted.reduce((s, w) => s + w.weight, 0);
-    bearTarget = totalWeight > 0
-      ? weighted.reduce((s, w) => s + w.price * w.weight, 0) / totalWeight
+    const weighted = supports.map((s, i) => ({
+      price: s.price,
+      weight: s.strength * CATEGORY_WEIGHT[s.category] * (1 / (i + 1))
+    }));
+    const total = weighted.reduce((s, w) => s + w.weight, 0);
+    bearTarget = total > 0
+      ? weighted.reduce((s, w) => s + w.price * w.weight, 0) / total
       : supports[0].price;
   }
 
-  // Expected range based on ATR and regime
-  const baseRange = atrVal ?? 8;
+  // Expected range: realized-vol expected move, regime-adjusted
+  // expectedMove is already the 1-hour vol-scaled move in $
+  const baseRange = Math.max(expectedMove, 5); // Floor at $5
   const regimeMultiplier =
-    regime === "volatile" ? 2.0
-    : regime === "trending-up" || regime === "trending-down" ? 1.5
-    : regime === "consolidation" ? 0.6
-    : 1.0;
+    regime === "volatile" ? 2.2
+    : regime === "trending-up" || regime === "trending-down" ? 1.8
+    : regime === "consolidation" ? 0.7
+    : 1.2;
 
-  const halfRange = roundTo(baseRange * regimeMultiplier * 1.5, 2);
+  const halfRange = roundTo(baseRange * regimeMultiplier, 2);
 
   return {
     bullTarget: roundTo(bullTarget, 2),
@@ -294,140 +442,224 @@ function computeTargets(
 }
 
 // ---------------------------------------------------------------------------
-// Breakout Probability — factors zone proximity and category strength
+// Breakout Probability — logistic model
 // ---------------------------------------------------------------------------
 
 function computeBreakoutProbability(
   price: number,
-  trend: TrendDirection,
+  trendScore: number,
   momentum: MomentumState,
+  normMomentum: number | null,
   rsiVal: number | null,
-  zScoreVal: number | null,
-  hurst: number | null,
-  zoneInfluence: number
+  vrVal: number | null,
+  zoneInfluence: number,
+  levelProximityScore: number
 ): { up: number; down: number } {
-  // Base probability from trend
-  let upBias = trend === "bullish" ? 0.15 : trend === "bearish" ? -0.10 : 0;
+  // Logistic regression: P(break_up) = sigmoid(z)
+  // z = Σ(βᵢ × xᵢ)
+  let z = 0;
 
-  // Momentum contribution
-  if (momentum === "accelerating") {
-    upBias += trend === "bullish" ? 0.10 : trend === "bearish" ? -0.10 : 0;
+  // Trend direction and strength (dominant factor)
+  z += trendScore * 2.0;
+
+  // Momentum (vol-normalized)
+  if (normMomentum !== null) {
+    z += clamp(normMomentum / 2, -1, 1) * 0.8;
+  }
+  if (momentum === "accelerating") z += Math.sign(trendScore || 1) * 0.3;
+
+  // RSI
+  if (rsiVal !== null) {
+    if (rsiVal > 70) z += 0.4;
+    else if (rsiVal < 30) z -= 0.4;
+    else z += (rsiVal - 50) / 50 * 0.3;
   }
 
-  // RSI contribution — extreme values increase breakout probability in that direction
-  if (rsiVal !== null) {
-    if (rsiVal > 70) upBias += 0.08;
-    else if (rsiVal < 30) upBias -= 0.08;
+  // Variance ratio: persistent trends more likely to continue
+  if (vrVal !== null) {
+    z += clamp((vrVal - 1) * 2, -0.5, 0.5);
   }
 
   // Zone influence
-  upBias += zoneInfluence * 0.12;
+  z += zoneInfluence * 0.6;
 
-  // Zone proximity bonus — being near a zone boundary increases breakout odds
-  const nearestZoneInfo = distanceToNearestZone(price);
-  if (nearestZoneInfo && nearestZoneInfo.side !== "inside") {
-    const dist = Math.abs(nearestZoneInfo.distance);
-    if (dist < 15) {
-      // Close approach to a zone boundary — breakout more likely through that boundary
-      const zoneApproachBonus = Math.exp(-dist / 8) * nearestZoneInfo.zone.strength * 0.06;
-      if (nearestZoneInfo.side === "below" && nearestZoneInfo.zone.type === "supply") {
-        // Approaching supply from below — upward breakout harder
-        upBias -= zoneApproachBonus;
-      } else if (nearestZoneInfo.side === "above" && nearestZoneInfo.zone.type === "demand") {
-        // Approaching demand from above — downward breakout harder
-        upBias += zoneApproachBonus;
-      }
-    }
-  }
-
-  // Grid position bias — extreme grid positions slightly favor mean-reversion
+  // Grid position — extreme positions favor mean-reversion
   const gp = gridPosition(price);
-  if (gp > 0.85) upBias -= 0.04;       // near top of grid, slight downward bias
-  else if (gp < 0.15) upBias += 0.04;  // near bottom of grid, slight upward bias
+  if (gp > 0.85) z -= 0.3;
+  else if (gp < 0.15) z += 0.3;
 
-  // Hurst contribution — persistent trends more likely to break out
-  if (hurst !== null && hurst > 0.6) {
-    upBias *= 1.2;
-  }
-
-  // Find nearest resistance and support
+  // Level proximity reduces breakout odds (stronger level = harder to break)
   const nearestRes = resistancesAbove(price, 1)[0];
   const nearestSup = supportsBelow(price, 1)[0];
 
-  // Proximity to level modulates breakout probability
-  const distToRes = nearestRes ? nearestRes.price - price : 50;
-  const distToSup = nearestSup ? price - nearestSup.price : 50;
+  if (nearestRes) {
+    const dist = nearestRes.price - price;
+    const strength = nearestRes.strength * CATEGORY_WEIGHT[nearestRes.category];
+    if (dist < 15) z -= strength * 0.4 * Math.exp(-dist / 8);
+  }
+  if (nearestSup) {
+    const dist = price - nearestSup.price;
+    const strength = nearestSup.strength * CATEGORY_WEIGHT[nearestSup.category];
+    if (dist < 15) z += strength * 0.4 * Math.exp(-dist / 8);
+  }
 
-  // Closer to level = higher breakout probability (in that direction)
-  const resProximityFactor = sigmoid(20 - distToRes, 0.15, 0);
-  const supProximityFactor = sigmoid(20 - distToSup, 0.15, 0);
+  // Convert to probability via sigmoid
+  const pUp = sigmoid(z, 1, 0);
+  const pDown = sigmoid(-z, 1, 0);
 
-  // Level strength + category weight reduce breakout probability (stronger = harder to break)
-  const resCatWeight = nearestRes ? CATEGORY_WEIGHT[nearestRes.category] : 0.5;
-  const supCatWeight = nearestSup ? CATEGORY_WEIGHT[nearestSup.category] : 0.5;
-  const resStrength = (nearestRes?.strength ?? 0.5) * resCatWeight;
-  const supStrength = (nearestSup?.strength ?? 0.5) * supCatWeight;
-
-  const upBreakout = clamp(
-    0.25 + upBias + resProximityFactor * 0.15 * (1 - resStrength),
-    0.05,
-    0.85
-  );
-  const downBreakout = clamp(
-    0.25 - upBias + supProximityFactor * 0.15 * (1 - supStrength),
-    0.05,
-    0.85
-  );
-
-  return { up: roundTo(upBreakout, 3), down: roundTo(downBreakout, 3) };
+  return {
+    up: roundTo(clamp(pUp, 0.05, 0.90), 3),
+    down: roundTo(clamp(pDown, 0.05, 0.90), 3)
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Confidence Score
+// Confidence — evidence accumulation model
 // ---------------------------------------------------------------------------
 
 function computeConfidence(
   bufferSize: number,
-  regime: MarketRegime,
-  trend: TrendDirection,
-  momentum: MomentumState,
-  rsiVal: number | null,
+  emaCrossScore: number,
+  tfConfluence: number,
+  normMomentum: number | null,
   hurst: number | null,
+  vrVal: number | null,
   levelProximityScore: number,
-  emaCrossScore: number
+  regime: MarketRegime,
+  volRegime: VolatilityRegime
 ): number {
-  let score = 40; // Base
+  // Evidence accumulation: each factor contributes evidence
+  // More evidence → higher confidence in the analysis quality
+  let evidence = 0;
 
-  // More data = higher confidence (up to +20)
-  score += Math.min(20, bufferSize / 3);
-
-  // Clear regime = higher confidence
-  if (regime === "trending-up" || regime === "trending-down") score += 10;
-  else if (regime === "consolidation") score += 5;
-  else if (regime === "volatile") score -= 8;
+  // Data quantity (diminishing returns)
+  if (bufferSize >= 30) evidence += 0.6;
+  if (bufferSize >= 60) evidence += 0.5;
+  if (bufferSize >= 120) evidence += 0.4;
+  if (bufferSize >= 200) evidence += 0.3;
 
   // EMA alignment clarity
-  score += Math.abs(emaCrossScore) * 15;
+  evidence += Math.abs(emaCrossScore) * 2.5;
 
-  // Momentum clarity
-  if (momentum === "accelerating") score += 5;
-  else if (momentum === "decaying") score -= 3;
+  // Multi-TF confluence — factors agreeing = more confidence
+  evidence += Math.abs(tfConfluence) * 2.0;
 
-  // RSI not in extremes = more reliable signals
-  if (rsiVal !== null) {
-    if (rsiVal > 30 && rsiVal < 70) score += 5;
-    else score -= 5; // Extreme RSI = lower confidence in target accuracy
+  // Momentum clarity (vol-normalized)
+  if (normMomentum !== null && Math.abs(normMomentum) > 1.0) {
+    evidence += 0.4;
   }
 
-  // Near key level = higher confidence in level analysis
-  score += levelProximityScore * 10;
-
-  // Hurst clarity
-  if (hurst !== null) {
-    if (hurst > 0.6 || hurst < 0.4) score += 5; // Clear signal
+  // Hurst clarity — clear trending or mean-reverting signal
+  if (hurst !== null && (hurst > 0.6 || hurst < 0.4)) {
+    evidence += 0.5;
   }
 
-  return Math.round(clamp(score, 10, 95));
+  // Variance ratio clarity
+  if (vrVal !== null && Math.abs(vrVal - 1) > 0.12) {
+    evidence += 0.4;
+  }
+
+  // Near key level → level-based analysis more reliable
+  evidence += levelProximityScore * 0.6;
+
+  // Regime clarity (trending/volatile are clearer than ranging)
+  if (regime === "trending-up" || regime === "trending-down") evidence += 0.5;
+  else if (regime === "volatile") evidence += 0.3;
+  else if (regime === "consolidation") evidence += 0.2;
+  else evidence -= 0.2; // Ranging = unclear
+
+  // Extreme vol reduces confidence
+  if (volRegime === "extreme") evidence -= 0.8;
+  else if (volRegime === "high") evidence -= 0.3;
+
+  // Map through sigmoid: evidence=3 → ~50%, evidence=6 → ~95%
+  // confidence = 5 + 90 × sigmoid(evidence - 3)
+  const raw = 5 + 90 * sigmoid(evidence, 1, 3);
+  return Math.round(clamp(raw, 5, 95));
+}
+
+// ---------------------------------------------------------------------------
+// Actionable Signal — entry / stop / targets
+// ---------------------------------------------------------------------------
+
+function computeSignal(
+  price: number,
+  trend: TrendDirection,
+  trendScore: number,
+  confidence: number,
+  atrVal: number | null,
+  kamaVal: number | null
+): TradingSignal {
+  const atr = atrVal ?? 8;
+
+  if (trend === "neutral" || Math.abs(trendScore) < 0.08) {
+    return {
+      direction: "FLAT",
+      strength: Math.round(clamp(Math.abs(trendScore) * 100, 0, 100)),
+      entry: roundTo(price, 2),
+      stopLoss: roundTo(price - atr * 1.5, 2),
+      targets: [],
+      riskReward: 0
+    };
+  }
+
+  const isLong = trend === "bullish";
+  const direction = isLong ? "LONG" as const : "SHORT" as const;
+  const strength = Math.round(clamp(Math.abs(trendScore) * 120, 0, 100));
+
+  // Entry: use KAMA as ideal entry (pullback to adaptive MA)
+  // If KAMA is between current price and stop, use it; else use current price
+  let entry = price;
+  if (kamaVal !== null) {
+    if (isLong && kamaVal < price && kamaVal > price - atr) {
+      entry = kamaVal;
+    } else if (!isLong && kamaVal > price && kamaVal < price + atr) {
+      entry = kamaVal;
+    }
+  }
+
+  // Stop: beyond nearest S/R + ATR buffer
+  let stopLoss: number;
+  if (isLong) {
+    const support = supportsBelow(price, 1)[0];
+    stopLoss = support
+      ? Math.min(support.price - atr * 0.3, price - atr * 1.2)
+      : price - atr * 1.5;
+  } else {
+    const resistance = resistancesAbove(price, 1)[0];
+    stopLoss = resistance
+      ? Math.max(resistance.price + atr * 0.3, price + atr * 1.2)
+      : price + atr * 1.5;
+  }
+
+  // Targets: next 2 S/R levels in signal direction
+  const targets: number[] = [];
+  if (isLong) {
+    const res = resistancesAbove(price, 2);
+    targets.push(...res.map(r => r.price));
+  } else {
+    const sup = supportsBelow(price, 2);
+    targets.push(...sup.map(s => s.price));
+  }
+
+  // Ensure at least one target (ATR-based fallback)
+  if (targets.length === 0) {
+    targets.push(roundTo(isLong ? price + atr * 2 : price - atr * 2, 2));
+  }
+
+  // R:R to T1
+  const risk = Math.abs(entry - stopLoss);
+  const reward = targets.length > 0 ? Math.abs(targets[0] - entry) : atr * 2;
+  const rr = risk > 0 ? reward / risk : 0;
+
+  return {
+    direction,
+    strength,
+    entry: roundTo(entry, 2),
+    stopLoss: roundTo(stopLoss, 2),
+    targets: targets.map(t => roundTo(t, 2)),
+    riskReward: roundTo(rr, 2)
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +686,27 @@ function computeRiskReward(
 }
 
 // ---------------------------------------------------------------------------
+// Expected Move — realized-vol-scaled
+// ---------------------------------------------------------------------------
+
+function computeExpectedMove(
+  price: number,
+  returns: number[]
+): number {
+  if (returns.length < 10) return 0;
+
+  // Use last 60 1-min returns (or available)
+  const window = Math.min(60, returns.length);
+  const rv = realizedVol(returns, window);
+
+  // Scale to 1-hour horizon: σ_1h = σ_1m × √60
+  const hourlyVol = rv * Math.sqrt(60);
+
+  // Expected move in dollars
+  return roundTo(price * hourlyVol, 2);
+}
+
+// ---------------------------------------------------------------------------
 // Main Analysis Function
 // ---------------------------------------------------------------------------
 
@@ -465,67 +718,128 @@ export function analyzeGold(
   const prices = buffer.prices;
   const hasIndicators = prices.length >= MIN_BUFFER_FOR_INDICATORS;
 
-  // --- Technical Indicators ---
+  // ── Log Returns (foundation of all returns-based metrics) ──
+  const returns = logReturns(prices);
+
+  // ── Classical Indicators (1m timeframe) ──
   const emaFast = hasIndicators ? ema(prices, EMA_FAST) : null;
   const emaMid = hasIndicators ? ema(prices, EMA_MID) : null;
   const emaSlow = prices.length >= EMA_SLOW ? ema(prices, EMA_SLOW) : null;
   const rsiVal = prices.length >= RSI_PERIOD + 1 ? rsi(prices, RSI_PERIOD) : null;
   const atrVal = prices.length >= ATR_PERIOD + 1 ? pseudoAtr(prices, ATR_PERIOD) : null;
   const zScoreVal = prices.length >= ZSCORE_PERIOD ? zScore(prices, ZSCORE_PERIOD) : null;
-  const hurstVal = prices.length >= HURST_MIN_POINTS
-    ? hurstExponent(prices)
+  const hurstVal = prices.length >= HURST_MIN_POINTS ? hurstExponent(prices) : null;
+
+  // ── Advanced Indicators (returns-based) ──
+  const currentVol = returns.length >= 30 ? realizedVol(returns, 30) : 0;
+  const historicalVol = returns.length >= 60 ? realizedVol(returns) : currentVol;
+  const rvDisplay = returns.length >= 10
+    ? roundTo(realizedVol(returns, Math.min(60, returns.length)) * Math.sqrt(60) * 100, 3)
     : null;
 
-  // --- Regime ---
+  const vrVal = prices.length >= VR_PERIOD * 3 ? varianceRatio(prices, VR_PERIOD) : null;
+  const acfVal = returns.length >= 5 ? autoCorrelation(returns, 1) : null;
+  const kamaVal = prices.length >= KAMA_ER_PERIOD + 1 ? kama(prices, KAMA_ER_PERIOD) : null;
+
+  // Normalized momentum: ROC(5) / realized_vol → sigma units
+  const rocVal = roc(prices, 5);
+  const rvShort = realizedVol(returns, Math.min(20, returns.length));
+  const normMomentum = rocVal !== null && rvShort > 0 ? roundTo(rocVal / rvShort, 2) : null;
+
+  // Bollinger Bands
+  const bb = prices.length >= BB_PERIOD ? bollingerBands(prices, BB_PERIOD) : null;
+
+  // ── Volatility Regime ──
+  const volRegime = hasIndicators ? classifyVolRegime(currentVol, historicalVol) : "normal";
+
+  // ── Multi-Timeframe Analysis ──
+  const prices5m = resample(prices, 5);
+  const prices15m = resample(prices, 15);
+  const returns5m = logReturns(prices5m);
+  const returns15m = logReturns(prices15m);
+
+  const tf5m = prices5m.length >= 8 ? analyzeTF(prices5m, returns5m) : {
+    trend: "neutral" as const, rsi: null, emaAligned: false, momentum: 0
+  };
+  const tf15m = prices15m.length >= 8 ? analyzeTF(prices15m, returns15m) : {
+    trend: "neutral" as const, rsi: null, emaAligned: false, momentum: 0
+  };
+
+  // Confluence: weighted agreement across timeframes
+  const tfScores = [
+    { score: tf15m.trend === "bullish" ? 1 : tf15m.trend === "bearish" ? -1 : 0, weight: 0.5 },
+    { score: tf5m.trend === "bullish" ? 1 : tf5m.trend === "bearish" ? -1 : 0, weight: 0.3 },
+  ];
+  // Add 1m trend from raw indicators
+  const score1m = hasIndicators ? tfTrendScore(prices, emaFast, emaMid, rsiVal) : 0;
+  tfScores.push({
+    score: score1m > 0.15 ? 1 : score1m < -0.15 ? -1 : 0,
+    weight: 0.2
+  });
+
+  const totalW = tfScores.reduce((s, t) => s + t.weight, 0);
+  const tfConfluence = totalW > 0
+    ? tfScores.reduce((s, t) => s + t.score * t.weight, 0) / totalW
+    : 0;
+
+  // ── Regime Detection ──
   const regime = hasIndicators
-    ? detectRegime(prices, atrVal, rsiVal, emaFast, emaMid, emaSlow, hurstVal)
+    ? detectRegime(prices, returns, emaFast, emaMid, emaSlow, rsiVal, hurstVal, vrVal, volRegime)
     : "ranging";
 
-  // --- Trend ---
-  const { trend, emaCrossScore } = hasIndicators
-    ? detectTrend(prices, emaFast, emaMid, emaSlow, rsiVal, zScoreVal)
-    : { trend: "neutral" as const, emaCrossScore: 0 };
+  // ── Trend Detection (multi-TF weighted) ──
+  const { trend, score: trendScore } = hasIndicators
+    ? detectTrend(score1m, tf5m, tf15m, zScoreVal, vrVal, normMomentum)
+    : { trend: "neutral" as TrendDirection, score: 0 };
 
-  // --- Momentum ---
-  const { momentum, momentumScore } = detectMomentum(prices);
+  // ── Momentum (vol-normalized) ──
+  const { momentum, score: momentumScore } = detectMomentum(prices, returns);
 
-  // --- Level Analysis ---
-  const { levelProximityScore, zoneInfluence } = analyzeLevelProximity(price);
+  // ── Level Analysis (ATR-adaptive sigma) ──
+  const { levelProximityScore, zoneInfluence } = analyzeLevelProximity(price, atrVal);
   const resistances = resistancesAbove(price, 4);
   const supports = supportsBelow(price, 4);
   const nearestRes = resistances[0] ?? null;
   const nearestSup = supports[0] ?? null;
   const zone = activeZone(price);
-  const magnet = strongestMagnet(price);
+  const magnet = strongestMagnet(price, atrVal ? atrVal * 3 : 30);
 
-  // --- Volatility Score ---
-  const sd20 = stddev(prices, Math.min(20, prices.length));
-  const mean20 = sma(prices, Math.min(20, prices.length));
-  const volatilityScore = sd20 !== null && mean20 !== null && mean20 > 0
-    ? clamp(sd20 / mean20 * 200, 0, 1)
+  // ── Volatility Score (returns-based) ──
+  const volatilityScore = currentVol > 0 && historicalVol > 0
+    ? clamp(currentVol / historicalVol, 0, 3) / 3
     : 0;
 
-  // --- Hurst bias ---
+  // ── Hurst bias ──
   const hurstBias = hurstVal !== null ? clamp((hurstVal - 0.5) * 2, -1, 1) : 0;
 
-  // --- Targets ---
+  // ── VR bias ──
+  const vrBias = vrVal !== null ? clamp((vrVal - 1) * 3, -1, 1) : 0;
+
+  // ── Expected Move (vol-scaled) — must come before targets ──
+  const expectedMove = computeExpectedMove(price, returns);
+
+  // ── Targets ──
   const { bullTarget, bearTarget, expectedRange } = computeTargets(
-    price, trend, atrVal, regime
+    price, trend, expectedMove, regime
   );
 
-  // --- Breakout Probability ---
+  // ── Breakout Probability (logistic model) ──
   const breakout = computeBreakoutProbability(
-    price, trend, momentum, rsiVal, zScoreVal, hurstVal, zoneInfluence
+    price, trendScore, momentum, normMomentum,
+    rsiVal, vrVal, zoneInfluence, levelProximityScore
   );
 
-  // --- Risk/Reward ---
+  // ── Risk/Reward ──
   const { rrLong, rrShort } = computeRiskReward(price, bullTarget, bearTarget);
 
-  // --- Confidence ---
+  // ── Confidence (evidence-based) ──
   const confidence = computeConfidence(
-    buffer.length, regime, trend, momentum, rsiVal, hurstVal,
-    levelProximityScore, emaCrossScore
+    buffer.length, trendScore, tfConfluence, normMomentum,
+    hurstVal, vrVal, levelProximityScore, regime, volRegime
   );
+
+  // ── Actionable Signal ──
+  const signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal);
 
   return {
     asOf: quote.timestamp,
@@ -543,9 +857,26 @@ export function analyzeGold(
     zScore: zScoreVal !== null ? roundTo(zScoreVal, 2) : null,
     hurst: hurstVal !== null ? roundTo(hurstVal, 3) : null,
 
+    realizedVol: rvDisplay,
+    varianceRatio: vrVal !== null ? roundTo(vrVal, 3) : null,
+    autocorrelation: acfVal !== null ? roundTo(acfVal, 3) : null,
+    kamaPrice: kamaVal !== null ? roundTo(kamaVal, 2) : null,
+    normalizedMomentum: normMomentum,
+    bbWidth: bb !== null ? roundTo(bb.width, 3) : null,
+    bbPercentB: bb !== null ? roundTo(bb.percentB, 3) : null,
+
     regime,
     trend,
     momentum,
+    volRegime,
+
+    tf: {
+      m5: tf5m,
+      m15: tf15m,
+      confluence: roundTo(tfConfluence, 3)
+    },
+
+    signal,
 
     nearestResistance: nearestRes,
     nearestSupport: nearestSup,
@@ -555,6 +886,7 @@ export function analyzeGold(
     bullTarget,
     bearTarget,
     expectedRange,
+    expectedMove,
 
     breakoutProbUp: breakout.up,
     breakoutProbDown: breakout.down,
@@ -564,16 +896,18 @@ export function analyzeGold(
 
     confidence,
 
-    resistanceLevels: resistances.map((r) => r.price),
-    supportLevels: supports.map((s) => s.price),
+    resistanceLevels: resistances.map(r => r.price),
+    supportLevels: supports.map(s => s.price),
 
     drivers: {
-      emaCrossScore: roundTo(emaCrossScore, 4),
+      emaCrossScore: roundTo(trendScore, 4),
       momentumScore: roundTo(momentumScore, 4),
       levelProximityScore: roundTo(levelProximityScore, 4),
       volatilityScore: roundTo(volatilityScore, 4),
       zoneInfluence: roundTo(zoneInfluence, 4),
-      hurstBias: roundTo(hurstBias, 4)
+      hurstBias: roundTo(hurstBias, 4),
+      vrBias: roundTo(vrBias, 4),
+      tfConfluence: roundTo(tfConfluence, 4)
     },
 
     bufferSize: buffer.length,
