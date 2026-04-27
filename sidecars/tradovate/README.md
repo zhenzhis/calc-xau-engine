@@ -2,6 +2,8 @@
 
 This is a read-only Tradovate Partner API market data sidecar for GC. It writes futures-compatible JSONL rows to `RITHMIC_GC_JSONL_PATH` so the main analysis service can ingest futures data without connecting directly to Tradovate.
 
+Current recommended low-cost route is Pepperstone broker-primary. Tradovate API access may require paid Partner API access and market data entitlement, so this sidecar is not part of the current default production route.
+
 ## Official Tradovate Points Used
 
 - Demo REST base: `https://demo.tradovateapi.com/v1`

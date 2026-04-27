@@ -15,8 +15,11 @@ interface PepperstoneRow {
 }
 
 export interface IngestReport {
+  mode: string;
   pepperstone_ok: boolean;
   futures_ok: boolean;
+  broker_primary_ok: boolean;
+  selected_broker_source: string | null;
   pepperstone_age_ms: number | null;
   futures_age_ms: number | null;
   pepperstone_spread: number | null;
@@ -29,6 +32,8 @@ interface IngestReportOptions {
   futuresPath: string;
   nowMs?: number;
   maxAgeMs?: number;
+  mode?: string;
+  selectedBrokerSource?: string;
 }
 
 const DEFAULT_FUTURES_PATH = "/quant/calc/data/xau-state-discord/rithmic-gc.jsonl";
@@ -37,6 +42,8 @@ const DEFAULT_PEPPERSTONE_PATH = "/quant/calc/data/xau-state-discord/pepperstone
 export async function buildIngestReport(options: IngestReportOptions): Promise<IngestReport> {
   const nowMs = options.nowMs ?? Date.now();
   const maxAgeMs = options.maxAgeMs ?? readNumberEnv("MAX_TICK_AGE_MS", 15_000);
+  const mode = options.mode ?? process.env.DATA_PRIMARY?.trim().toLowerCase() ?? "auto";
+  const selectedBrokerSource = options.selectedBrokerSource ?? process.env.BROKER_PRIMARY_SOURCE?.trim().toLowerCase() ?? "pepperstone";
   const messages: string[] = [];
 
   const futuresRows = await readLastJsonRows<FuturesRow>(options.futuresPath, 5, "futures", messages);
@@ -66,9 +73,18 @@ export async function buildIngestReport(options: IngestReportOptions): Promise<I
     messages.push("pepperstone bid/ask/spread missing or invalid");
   }
 
+  const pepperstoneOk = pepperstoneAgeMs !== null && pepperstoneAgeMs <= maxAgeMs && pepperstoneSpread !== null;
+  const futuresOk = futuresAgeMs !== null && futuresAgeMs <= maxAgeMs && futuresLast !== null;
+  if (mode === "broker" && !futuresOk) {
+    messages.push("futures unavailable; broker-primary mode active");
+  }
+
   return {
+    mode,
     pepperstone_ok: pepperstoneAgeMs !== null && pepperstoneAgeMs <= maxAgeMs && pepperstoneSpread !== null,
-    futures_ok: futuresAgeMs !== null && futuresAgeMs <= maxAgeMs && futuresLast !== null,
+    futures_ok: futuresOk,
+    broker_primary_ok: mode === "broker" && selectedBrokerSource === "pepperstone" && pepperstoneOk,
+    selected_broker_source: selectedBrokerSource,
     pepperstone_age_ms: pepperstoneAgeMs,
     futures_age_ms: futuresAgeMs,
     pepperstone_spread: pepperstoneSpread,
@@ -77,13 +93,20 @@ export async function buildIngestReport(options: IngestReportOptions): Promise<I
   };
 }
 
+export function strictIngestOk(report: IngestReport): boolean {
+  if (report.mode === "broker") {
+    return report.pepperstone_ok;
+  }
+  return report.pepperstone_ok && report.futures_ok;
+}
+
 async function main(): Promise<void> {
   const report = await buildIngestReport({
     futuresPath: process.env.RITHMIC_GC_JSONL_PATH || DEFAULT_FUTURES_PATH,
     pepperstonePath: process.env.PEPPERSTONE_XAU_JSONL_PATH || DEFAULT_PEPPERSTONE_PATH,
   });
   console.log(JSON.stringify(report, null, 2));
-  if (process.argv.includes("--strict") && (!report.futures_ok || !report.pepperstone_ok)) {
+  if (process.argv.includes("--strict") && !strictIngestOk(report)) {
     process.exitCode = 1;
   }
 }

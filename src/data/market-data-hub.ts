@@ -4,13 +4,15 @@ import { aggregateCandles } from "./bar-builder.js";
 import { YahooGoldProvider } from "./client.js";
 import { RithmicFileProvider } from "./providers/rithmic-file-provider.js";
 import { PepperstoneFileProvider } from "./providers/pepperstone-file-provider.js";
-import { Candle, DataSnapshot, MarketTick, SourceHealth } from "./types.js";
+import { Candle, DataSnapshot, FuturesFlowStatus, MarketTick, SourceHealth } from "./types.js";
 
 interface ProviderResult {
   tick: MarketTick | null;
   candles: Candle[];
   health: SourceHealth;
 }
+
+type PrimaryKind = "rithmic" | "yahoo" | "broker";
 
 function emptyResult(health: SourceHealth): ProviderResult {
   return { tick: null, candles: [], health };
@@ -27,6 +29,27 @@ function completeRatio(candles: Candle[]): number {
   if (candles.length === 0) return 0;
   const total = candles.reduce((sum, candle) => sum + (candle.completenessRatio ?? (candle.complete ? 1 : 0)), 0);
   return Math.round((total / candles.length) * 100) / 100;
+}
+
+function candleFromTick(tick: MarketTick, qualityScore: number): Candle {
+  const startMs = Math.floor(tick.timestampMs / 60_000) * 60_000;
+  return {
+    symbol: tick.symbol,
+    source: tick.source,
+    instrumentKind: tick.instrumentKind,
+    timeframe: "1m",
+    startMs,
+    endMs: startMs + 60_000,
+    open: tick.mid,
+    high: tick.mid,
+    low: tick.mid,
+    close: tick.mid,
+    volume: tick.volume,
+    tickCount: 1,
+    complete: false,
+    qualityScore,
+    completenessRatio: 1
+  };
 }
 
 export class MarketDataHub {
@@ -46,35 +69,53 @@ export class MarketDataHub {
   async fetchSnapshot(): Promise<DataSnapshot> {
     const [rithmic, yahoo, broker] = await Promise.all([
       this.fetchRithmic(),
-      this.config.enableYahooFallback ? this.fetchYahoo() : Promise.resolve(emptyResult(this.yahoo.getHealth())),
+      this.config.enableYahooFallback ? this.fetchYahoo().catch((error) => {
+        this.logger.warn("Yahoo GC=F reference unavailable", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return emptyResult(this.yahoo.getHealth());
+      }) : Promise.resolve(emptyResult(this.yahoo.getHealth())),
       this.fetchBroker()
     ]);
 
-    const selected = this.selectPrimary(rithmic, yahoo);
+    const selected = this.selectPrimary(rithmic, yahoo, broker);
     if (!selected.tick && selected.candles.length === 0) {
-      throw new Error("No usable GC analysis data source is available");
+      throw new Error("No usable analysis data source is available");
     }
 
-    const m1 = selected.candles.slice(-240);
+    const selectedCandles = selected.candles.length > 0
+      ? selected.candles
+      : selected.tick
+        ? [candleFromTick(selected.tick, selected.health.qualityScore)]
+        : [];
+    const m1 = selectedCandles.slice(-240);
     const m5 = aggregateCandles(m1, "5m").slice(-120);
     const m15 = aggregateCandles(m1, "15m").slice(-96);
     const h1 = aggregateCandles(m1, "1h").slice(-72);
-    const gcCandle = latestComplete(m1);
-    const gcTick = selected.tick;
-    const price = gcTick?.mid ?? gcCandle?.close;
-    const timestampMs = gcTick?.timestampMs ?? gcCandle?.endMs ?? Date.now();
+    const primaryCandle = latestComplete(m1);
+    const primaryTick = selected.tick;
+    const price = primaryTick?.mid ?? primaryCandle?.close;
+    const timestampMs = primaryTick?.timestampMs ?? primaryCandle?.endMs ?? Date.now();
     if (price === undefined) {
       throw new Error("Selected analysis source has no price");
     }
 
-    const brokerTick = broker.tick && broker.health.qualityScore >= this.config.minSourceQuality
+    const gcTick = selected.kind === "broker" ? (rithmic.tick ?? yahoo.tick) : selected.tick;
+    const gcCandles = selected.kind === "broker"
+      ? (rithmic.candles.length > 0 ? rithmic.candles : yahoo.candles)
+      : m1;
+    const gcCandle = latestComplete(gcCandles);
+    const brokerTick = selected.kind === "broker"
+      ? primaryTick
+      : broker.tick && broker.health.qualityScore >= this.config.minSourceQuality
       ? broker.tick
       : null;
+    const basisReferencePrice = gcTick?.mid ?? gcCandle?.close;
     const basis =
-      this.config.enableBrokerBasis && brokerTick
+      this.config.enableBrokerBasis && brokerTick && basisReferencePrice !== undefined
         ? {
             available: true,
-            futuresMinusBroker: price - brokerTick.mid,
+            futuresMinusBroker: basisReferencePrice - brokerTick.mid,
             brokerSpread:
               brokerTick.ask !== undefined && brokerTick.bid !== undefined
                 ? brokerTick.ask - brokerTick.bid
@@ -82,17 +123,20 @@ export class MarketDataHub {
           }
         : { available: false };
 
-    const quote = selected.kind === "yahoo" ? this.yahoo.getLastQuote() : null;
+    const quote = selected.kind === "yahoo" || (selected.kind === "broker" && yahoo.tick)
+      ? this.yahoo.getLastQuote()
+      : null;
     const sourceHealth = [rithmic.health, yahoo.health, broker.health];
     const activePrimaryHealth = selected.health;
     const brokerHealth = broker.health;
+    const futuresFlowStatus = this.futuresFlowStatus(selected.kind, rithmic, yahoo);
 
     return {
       asOfMs: timestampMs,
       primary: {
-        symbol: gcTick?.symbol ?? gcCandle?.symbol ?? "GC",
+        symbol: primaryTick?.symbol ?? primaryCandle?.symbol ?? (selected.kind === "broker" ? "XAUUSD" : "GC"),
         source: selected.health.source,
-        instrumentKind: gcTick?.instrumentKind ?? gcCandle?.instrumentKind ?? "futures",
+        instrumentKind: primaryTick?.instrumentKind ?? primaryCandle?.instrumentKind ?? (selected.kind === "broker" ? "broker_spot" : "futures"),
         timestampMs,
         price,
         previousClose: quote?.previousClose,
@@ -107,9 +151,10 @@ export class MarketDataHub {
       activePrimaryHealth,
       brokerHealth,
       optionalSourceHealth: sourceHealth.filter(
-        (health) => health.source !== activePrimaryHealth.source && health.source !== "pepperstone"
+        (health) => health.source !== activePrimaryHealth.source && (selected.kind === "broker" || health.source !== "pepperstone")
       ),
       sourceHealth,
+      futuresFlowStatus,
       bars: { m1, m5, m15, h1 },
       barCoverage: {
         m1: m1.length,
@@ -149,14 +194,38 @@ export class MarketDataHub {
   }
 
   private async fetchBroker(): Promise<ProviderResult> {
-    const tick = (await this.pepperstone.fetchLatestTick?.()) ?? null;
-    return { tick, candles: [], health: this.pepperstone.getHealth() };
+    const [tick, candles] = await Promise.all([
+      this.pepperstone.fetchLatestTick?.() ?? Promise.resolve(null),
+      this.pepperstone.fetchRecentCandles?.("XAUUSD", "1m", 240) ?? Promise.resolve([])
+    ]);
+    return { tick, candles, health: this.pepperstone.getHealth() };
   }
 
   private selectPrimary(
     rithmic: ProviderResult,
-    yahoo: ProviderResult
-  ): ProviderResult & { kind: "rithmic" | "yahoo" } {
+    yahoo: ProviderResult,
+    broker: ProviderResult
+  ): ProviderResult & { kind: PrimaryKind } {
+    const brokerUsable =
+      broker.health.qualityScore >= this.config.minSourceQuality &&
+      (broker.tick !== null || broker.candles.length > 0);
+    const yahooUsable =
+      this.config.enableYahooFallback &&
+      (yahoo.tick !== null || yahoo.candles.length > 0);
+
+    if (this.config.dataPrimary === "broker") {
+      if (brokerUsable) {
+        return { ...broker, kind: "broker" };
+      }
+      if (yahooUsable) {
+        this.logger.warn("Broker primary unavailable; using Yahoo GC=F fallback for analysis", {
+          broker: broker.health.error
+        });
+        return { ...yahoo, kind: "yahoo" };
+      }
+      throw new Error("Broker primary selected but Pepperstone quote unavailable/stale.");
+    }
+
     const rithmicUsable =
       this.config.dataPrimary !== "yahoo" &&
       rithmic.health.qualityScore >= this.config.minSourceQuality &&
@@ -165,10 +234,6 @@ export class MarketDataHub {
     if (rithmicUsable) {
       return { ...rithmic, kind: "rithmic" };
     }
-
-    const yahooUsable =
-      this.config.enableYahooFallback &&
-      (yahoo.tick !== null || yahoo.candles.length > 0);
 
     if (yahooUsable) {
       if (rithmic.health.error) {
@@ -180,5 +245,21 @@ export class MarketDataHub {
     }
 
     return { ...rithmic, kind: "rithmic" };
+  }
+
+  private futuresFlowStatus(
+    selectedKind: PrimaryKind,
+    rithmic: ProviderResult,
+    yahoo: ProviderResult
+  ): FuturesFlowStatus {
+    const rithmicUsable =
+      rithmic.health.qualityScore >= this.config.minSourceQuality &&
+      (rithmic.tick !== null || rithmic.candles.length > 0);
+    const yahooUsable = yahoo.tick !== null || yahoo.candles.length > 0;
+
+    if (selectedKind === "rithmic" && rithmicUsable) return "confirmed";
+    if (selectedKind === "yahoo" && yahooUsable) return "proxy-only";
+    if (selectedKind === "broker" && rithmicUsable) return "confirmed";
+    return "unknown";
   }
 }

@@ -32,8 +32,14 @@ function parseBoolean(name: string, fallback: boolean): boolean {
 
 function parseDataPrimary(): RuntimeConfig["dataPrimary"] {
   const raw = process.env.DATA_PRIMARY?.trim().toLowerCase() || "auto";
-  if (raw === "auto" || raw === "rithmic" || raw === "yahoo") return raw;
+  if (raw === "auto" || raw === "rithmic" || raw === "yahoo" || raw === "broker") return raw;
   throw new Error(`Invalid DATA_PRIMARY: ${raw}`);
+}
+
+function parseBrokerPrimarySource(): RuntimeConfig["brokerPrimarySource"] {
+  const raw = process.env.BROKER_PRIMARY_SOURCE?.trim().toLowerCase() || "pepperstone";
+  if (raw === "pepperstone") return raw;
+  throw new Error(`Invalid BROKER_PRIMARY_SOURCE: ${raw}`);
 }
 
 function optionalPath(name: string): string | undefined {
@@ -61,6 +67,7 @@ export function loadConfig(): RuntimeConfig {
       process.env.ANALYSIS_SNAPSHOT_PATH?.trim() || ".runtime/analysis-snapshots.jsonl"
     ),
     dataPrimary: parseDataPrimary(),
+    brokerPrimarySource: parseBrokerPrimarySource(),
     enableYahooFallback: parseBoolean("ENABLE_YAHOO_FALLBACK", true),
     rithmicGcJsonlPath: optionalPath("RITHMIC_GC_JSONL_PATH"),
     pepperstoneXauJsonlPath: optionalPath("PEPPERSTONE_XAU_JSONL_PATH"),

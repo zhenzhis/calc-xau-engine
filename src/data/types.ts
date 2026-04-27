@@ -10,6 +10,8 @@ export type InstrumentKind = "futures_proxy" | "futures" | "broker_spot" | "macr
 
 export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1d";
 
+export type FuturesFlowStatus = "confirmed" | "proxy-only" | "unknown";
+
 export interface SourceHealth {
   source: DataSourceName;
   ok: boolean;
@@ -102,6 +104,7 @@ export interface DataSnapshot {
   brokerHealth: SourceHealth;
   optionalSourceHealth: SourceHealth[];
   sourceHealth: SourceHealth[];
+  futuresFlowStatus: FuturesFlowStatus;
   bars: {
     m1: Candle[];
     m5: Candle[];

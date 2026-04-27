@@ -2,6 +2,8 @@
 
 Sidecars are read-only market data adapters. They write JSONL files that the main `xau-state-discord` process already knows how to ingest.
 
+Current low-cost production route is Pepperstone cTrader FIX as broker-primary. In that mode Discord will show `BROKER PRIMARY` and `FUTURES FLOW UNKNOWN`; the system must not describe broker spot quotes as COMEX futures flow.
+
 ## Security Rules
 
 - Do not commit credentials.
@@ -62,8 +64,17 @@ RITHMIC_GC_JSONL_PATH=/quant/calc/data/xau-state-discord/rithmic-gc.jsonl
 
 ## Start Sidecars
 
+For the current broker-primary route, start only Pepperstone:
+
 ```bash
 npm run sidecar:pepperstone
+```
+
+Do not start Tradovate unless paid API access and market data entitlement are confirmed. Rithmic is not implemented without official SDK/proto files.
+
+Tradovate remains available as an explicit futures sidecar only after paid API access is confirmed:
+
+```bash
 npm run sidecar:tradovate
 ```
 
@@ -103,17 +114,19 @@ The command reads the last five rows from the futures and Pepperstone JSONL file
 - `futures_last`
 - diagnostic `messages`
 
-Missing files or stale rows are reported as `false` health with a message, not hidden as success. In `--strict` mode, any failed feed sets a non-zero exit code.
+Missing files or stale rows are reported as `false` health with a message, not hidden as success. In `DATA_PRIMARY=broker` with `--strict`, only Pepperstone is required; missing futures emits `futures unavailable; broker-primary mode active` and does not fail strict mode. In other modes, failed required feeds set a non-zero exit code.
 
 ## Confirm Discord Is No Longer Fallback
 
-After both JSONL feeds are fresh, run:
+For broker-primary, after the Pepperstone JSONL feed is fresh, run:
 
 ```bash
 npm run dry-run
 ```
 
-The Discord payload should no longer show `FALLBACK DATA`. With a fresh Pepperstone quote, it should also stop showing `BROKER QUOTE MISSING`.
+With `DATA_PRIMARY=broker`, the Discord payload should show `BROKER PRIMARY` and `FUTURES FLOW UNKNOWN`. It should no longer show Yahoo as the primary source. It may still show Yahoo GC=F as a reference or fallback when enabled.
+
+Free or low-cost routes do not provide confirmed COMEX real-time tick, DOM, volume, or open-interest flow. Those fields remain unavailable unless a confirmed futures feed is added.
 
 ## Stale Data Handling
 

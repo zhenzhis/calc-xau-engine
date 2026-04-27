@@ -3,7 +3,8 @@ export interface RuntimeConfig {
   publishStatePath: string;
   priceBufferPath: string;
   analysisSnapshotPath: string;
-  dataPrimary: "auto" | "rithmic" | "yahoo";
+  dataPrimary: "auto" | "rithmic" | "yahoo" | "broker";
+  brokerPrimarySource: "pepperstone";
   enableYahooFallback: boolean;
   rithmicGcJsonlPath?: string;
   pepperstoneXauJsonlPath?: string;

@@ -1,6 +1,6 @@
 import { PriceLevel, PriceZone } from "../levels/grid.js";
 import { HeadAndShouldersPattern } from "./patterns.js";
-import { BarCoverage, BrokerBasis, DataSnapshot, SourceHealth } from "../data/types.js";
+import { BarCoverage, BrokerBasis, DataSnapshot, FuturesFlowStatus, SourceHealth } from "../data/types.js";
 import { EventRisk } from "../events/event-calendar.js";
 import { MacroDrivers, MacroSnapshot } from "../macro/types.js";
 
@@ -154,6 +154,7 @@ export interface GoldAnalysis {
     sourceHealth: SourceHealth[];
     basis: BrokerBasis;
     barCoverage: BarCoverage;
+    futuresFlowStatus: FuturesFlowStatus;
   };
 }
 

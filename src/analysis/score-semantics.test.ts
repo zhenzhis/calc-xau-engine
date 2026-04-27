@@ -59,6 +59,7 @@ test("Discord payload labels breakout values as scores, not probabilities", () =
     brokerHealth: health("pepperstone", 0),
     optionalSourceHealth: [health("rithmic", 0)],
     sourceHealth: [health("yahoo", 75), health("rithmic", 0), health("pepperstone", 0)],
+    futuresFlowStatus: "proxy-only",
     bars: { m1, m5: [], m15: [], h1: [] },
     barCoverage: {
       m1: m1.length,

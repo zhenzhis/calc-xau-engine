@@ -2,6 +2,8 @@
 
 Direct Rithmic protocol integration is intentionally not implemented in this repository.
 
+Current recommended low-cost route is Pepperstone broker-primary. Without an official Rithmic SDK/proto bundle and account entitlement, the system cannot confirm COMEX futures tick, DOM, volume, or open-interest flow. Discord will therefore show `FUTURES FLOW UNKNOWN` in broker-primary mode.
+
 The official Rithmic API page lists:
 
 - R | API+,

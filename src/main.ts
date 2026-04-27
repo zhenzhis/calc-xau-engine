@@ -17,6 +17,7 @@ async function main(): Promise<void> {
     publishStatePath: config.publishStatePath,
     priceBufferPath: config.priceBufferPath,
     dataPrimary: config.dataPrimary,
+    brokerPrimarySource: config.brokerPrimarySource,
     enableYahooFallback: config.enableYahooFallback,
     enableMarketHoursOnly: config.enableMarketHoursOnly
   });

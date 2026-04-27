@@ -736,6 +736,7 @@ export function analyzeGold(
   context: AnalysisContext = {}
 ): GoldAnalysis {
   const price = snapshot.primary.price;
+  const isBrokerPrimary = snapshot.primary.instrumentKind === "broker_spot";
   const prices = snapshot.bars.m1.map((bar) => bar.close);
   const hasIndicators = prices.length >= MIN_BUFFER_FOR_INDICATORS;
 
@@ -856,10 +857,13 @@ export function analyzeGold(
   const { rrLong, rrShort } = computeRiskReward(price, bullTarget, bearTarget);
 
   // ── Confidence (evidence-based) ──
-  const confidence = computeConfidence(
+  const rawConfidence = computeConfidence(
     prices.length, trendScore, tfConfluence, normMomentum,
     hurstVal, vrVal, levelProximityScore, regime, volRegime
   );
+  const confidence = isBrokerPrimary && snapshot.futuresFlowStatus !== "confirmed"
+    ? Math.min(rawConfidence, 75)
+    : rawConfidence;
 
   // ── Pattern Detection (Head & Shoulders) ──
   const patternResult = prices.length >= 30
@@ -973,7 +977,8 @@ export function analyzeGold(
       snapshot,
       sourceHealth: snapshot.sourceHealth,
       basis: snapshot.basis,
-      barCoverage: snapshot.barCoverage
+      barCoverage: snapshot.barCoverage,
+      futuresFlowStatus: snapshot.futuresFlowStatus
     },
 
     macro: context.macro ?? null,

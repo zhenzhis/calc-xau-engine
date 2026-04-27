@@ -58,10 +58,15 @@ function embedColor(a: GoldAnalysis): number {
 function sourceLabel(a: GoldAnalysis): string {
   const primary = a.data.snapshot.primary;
   const broker = a.data.snapshot.xauBrokerTick;
+  if (primary.instrumentKind === "broker_spot") return "Pepperstone cTrader FIX";
   if (primary.source === "rithmic" && broker) return "Rithmic+Pepperstone";
   if (primary.source === "rithmic") return "Rithmic";
   if (primary.source === "yahoo") return "Yahoo fallback";
   return primary.source;
+}
+
+function isBrokerPrimary(a: GoldAnalysis): boolean {
+  return a.data.snapshot.primary.instrumentKind === "broker_spot";
 }
 
 function stateLabel(a: GoldAnalysis): "LONG-PULLBACK" | "SHORT-REJECTION" | "RANGE-WATCH" | "NO-TRADE" {
@@ -162,6 +167,7 @@ function keyLevels(a: GoldAnalysis): string {
 }
 
 function setupField(a: GoldAnalysis): string {
+  const brokerPrimary = isBrokerPrimary(a);
   const setupValid = a.eventRisk.tradePermission === "allowed" && stateLabel(a) !== "NO-TRADE";
   const primaryOk = a.data.snapshot.activePrimaryHealth.qualityScore >= 60;
   const brokerOk = a.data.snapshot.xauBrokerTick !== null && a.data.snapshot.brokerHealth.qualityScore >= 60;
@@ -169,10 +175,18 @@ function setupField(a: GoldAnalysis): string {
     a.trend === "bullish" ? a.nearestSupport?.price
     : a.trend === "bearish" ? a.nearestResistance?.price
     : undefined;
+  const futuresCondition =
+    a.data.futuresFlowStatus === "unknown" ? "futures flow unavailable"
+    : a.data.futuresFlowStatus === "proxy-only" ? "futures flow proxy-only"
+    : "futures flow confirmed";
   const conditions = [
     a.eventRisk.tradePermission === "allowed" ? "event gate clear" : `event gate=${a.eventRisk.tradePermission}`,
-    primaryOk ? "primary source acceptable" : "improve primary source quality",
-    brokerOk ? "broker quote available" : "broker quote missing",
+    brokerPrimary
+      ? (brokerOk ? "broker quote available" : "broker quote missing")
+      : (primaryOk ? "primary source acceptable" : "improve primary source quality"),
+    brokerPrimary
+      ? futuresCondition
+      : (brokerOk ? "broker quote available" : "broker quote missing"),
     Math.abs(a.tf.confluence) >= 0.5 ? "multi-timeframe aligned" : "need timeframe confirmation"
   ];
 
@@ -191,13 +205,14 @@ function setupField(a: GoldAnalysis): string {
 }
 
 function diagnostics(a: GoldAnalysis): string {
+  const scoreNote = isBrokerPrimary(a) ? " (uncalibrated broker-price score)" : "";
   return [
     `RSI(14): ${a.rsi14?.toFixed(1) ?? "n/a"}`,
     `ATR(true): ${a.atr !== null ? fp(a.atr) : "n/a"}`,
     `Realized vol: ${a.realizedVol !== null ? `${a.realizedVol.toFixed(2)}%` : "n/a"}`,
     `VR(5): ${a.varianceRatio?.toFixed(2) ?? "n/a"}`,
     `Hurst: ${a.hurst?.toFixed(2) ?? "n/a"}`,
-    `Breakout scores: up=${a.breakoutScoreUp.toFixed(2)} down=${a.breakoutScoreDown.toFixed(2)}`
+    `Breakout scores: up=${a.breakoutScoreUp.toFixed(2)} down=${a.breakoutScoreDown.toFixed(2)}${scoreNote}`
   ].join("\n");
 }
 
@@ -210,8 +225,11 @@ export function buildDiscordPayload(
   const primaryDegraded = a.data.snapshot.activePrimaryHealth.qualityScore < 60;
   const brokerMissing = a.data.snapshot.xauBrokerTick === null || a.data.snapshot.brokerHealth.qualityScore < 60;
   const fallback = a.data.snapshot.primary.fallback;
+  const brokerPrimary = isBrokerPrimary(a);
   const state = stateLabel(a);
   const titleFlags = [
+    brokerPrimary ? "BROKER PRIMARY" : null,
+    brokerPrimary && a.data.futuresFlowStatus === "unknown" ? "FUTURES FLOW UNKNOWN" : null,
     primaryDegraded ? "PRIMARY DATA DEGRADED" : null,
     fallback ? "FALLBACK DATA" : null,
     brokerMissing ? "BROKER QUOTE MISSING" : null
@@ -220,18 +238,29 @@ export function buildDiscordPayload(
   const title = `${titlePrefix}XAU State | ${fp(a.price)} | ${state} | Evidence ${a.confidence}`;
 
   const gcHealth = a.data.sourceHealth.find((h) => h.source === a.data.snapshot.primary.source);
+  const gcProxyHealth = a.data.sourceHealth.find((h) => h.source === "yahoo");
   const brokerHealth = a.data.sourceHealth.find((h) => h.source === "pepperstone");
   const spread = a.data.basis.brokerSpread !== undefined ? fp(a.data.basis.brokerSpread) : "unavailable";
+  const basisLabel = a.data.basis.available && a.data.basis.futuresMinusBroker !== undefined
+    ? `proxy_basis=${fSigned(a.data.basis.futuresMinusBroker)}`
+    : "basis=unavailable";
+  const gcProxyLabel =
+    a.data.snapshot.gcTick?.source === "yahoo" ? "Yahoo GC=F reference"
+    : a.data.snapshot.gcTick ? `${a.data.snapshot.gcTick.source} reference`
+    : "unavailable";
+  const dataLine = brokerPrimary
+    ? `Data: source=Pepperstone cTrader FIX | gc_proxy=${gcProxyLabel} | gc_age=${ageLabel(gcProxyHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread} | ${basisLabel}`
+    : `Data: source=${sourceLabel(a)} | gc_age=${ageLabel(gcHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread}`;
   const description = [
     `Bias: ${state} | trend=${trendLabel(a.trend)} | regime=${regimeLabel(a.regime)} | change=${fPct(a.dailyChangePct)}`,
-    `Data: source=${sourceLabel(a)} | gc_age=${ageLabel(gcHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread}`,
+    dataLine,
     eventLine(a),
     triggerReason ? `Trigger: ${triggerReason}` : null
   ].filter(Boolean).join("\n");
 
   const stateSummary = [
     `Macro regime: ${a.macroDrivers.macroBias}`,
-    `Futures flow: ${trendLabel(a.trend)} / tf=${a.tf.confluence.toFixed(2)}`,
+    `Futures flow: ${a.data.futuresFlowStatus}${a.data.futuresFlowStatus === "confirmed" ? ` / tf=${a.tf.confluence.toFixed(2)}` : ""}`,
     `Volatility: ${volLabel(a.volRegime)}`,
     `Session: ${sessionLabel ?? "n/a"}`,
     `Trade permission: ${a.eventRisk.tradePermission}`
@@ -244,6 +273,8 @@ export function buildDiscordPayload(
 
   const footer = [
     "model=xau_state_v2",
+    `mode=${brokerPrimary ? "broker-primary" : "standard"}`,
+    `futuresFlow=${a.data.futuresFlowStatus}`,
     "scores=uncalibrated",
     `sourceHealth=${sourceHealthText(a)}`,
     `optionalSourceHealth=${a.data.snapshot.optionalSourceHealth.map((h) => `${h.source}:${h.ok ? "ok" : "missing"}`).join(",") || "none"}`,
