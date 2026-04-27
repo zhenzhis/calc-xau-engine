@@ -1,16 +1,22 @@
 # Rithmic Sidecar
 
-Direct Rithmic integration is intentionally not implemented in this repository.
+Direct Rithmic protocol integration is intentionally not implemented in this repository.
 
-Rithmic requires official R | API / SDK access and local user-provided documentation or binaries. This project must not guess or reverse engineer private Rithmic protocols.
+The official Rithmic API page lists:
 
-Any future Rithmic sidecar must:
+- R | API+,
+- R | Protocol API,
+- R | Diamond API.
 
-- use official Rithmic SDK/API documentation supplied locally by the user,
+R | Protocol API is documented by Rithmic as a WebSocket + Google Protocol Buffers interface. Implementing it correctly requires official SDK/proto files, entitlement details, and broker-approved API access. This repository must not guess or reverse engineer private protocol messages.
+
+Future implementation requirements:
+
+- use official Rithmic SDK/proto files supplied locally by the user,
 - keep credentials outside the repository,
 - remain read-only market data ingest,
 - write rows to `RITHMIC_GC_JSONL_PATH`,
-- preserve the existing futures JSONL schema:
+- preserve this futures JSONL schema:
 
 ```json
 {
@@ -23,3 +29,5 @@ Any future Rithmic sidecar must:
   "volume": 12
 }
 ```
+
+TODO: implement after the user provides official Rithmic SDK/proto files and entitlement documentation.

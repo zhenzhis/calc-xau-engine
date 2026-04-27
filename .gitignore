@@ -1,6 +1,7 @@
+.env
+.env.*
+!.env.example
+!.env.sidecar.example
+.runtime/
 node_modules/
 dist/
-.runtime/
-.env
-.env.sidecar
-sidecars/**/*.env

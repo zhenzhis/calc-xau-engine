@@ -1,39 +1,41 @@
 # Tradovate GC Sidecar
 
-This sidecar is a read-only Tradovate market data adapter for GC. It writes futures-compatible JSONL rows to `RITHMIC_GC_JSONL_PATH` so the main system can use the same futures ingest path.
+This is a read-only Tradovate Partner API market data sidecar for GC. It writes futures-compatible JSONL rows to `RITHMIC_GC_JSONL_PATH` so the main analysis service can ingest futures data without connecting directly to Tradovate.
 
-Official Tradovate documentation checked for this implementation:
+## Official Tradovate Points Used
 
-- REST demo/live URLs: `https://demo.tradovateapi.com/v1`, `https://live.tradovateapi.com/v1`
+- Demo REST base: `https://demo.tradovateapi.com/v1`
+- Live REST base: `https://live.tradovateapi.com/v1`
 - Market data WebSocket: `wss://md.tradovateapi.com/v1/websocket`
-- Auth endpoint: `/auth/accesstokenrequest`
-- WebSocket protocol: `endpoint\nrequest_id\nheaders\nbody`
-- Market data subscription: `md/subscribeQuote`
-- Market data frames: `e="md"` with quote entries such as `Bid`, `Offer`, `Trade`, and `TotalTradeVolume`
+- Access token request: `POST /auth/accesstokenrequest`
+- Token lifetime is documented as 90 minutes; the sidecar renews before expiry and avoids frequent new sessions.
+- Quote subscription endpoint: `md/subscribeQuote`
+- Market data frames use `e="md"` and quote entries such as `Bid.price`, `Offer.price`, `Trade.price`, and `TotalTradeVolume.size`.
 
 ## Environment
 
-Store these values in `/quant/calc/config/xau-sidecars.env` or process environment. Do not commit them.
+Store these values in `.env.sidecar` for staging or `/quant/calc/config/xau-sidecars.env` for production systemd. Do not commit either file.
 
 ```dotenv
 TRADOVATE_ENV=demo
 TRADOVATE_USERNAME=
 TRADOVATE_PASSWORD=
 TRADOVATE_APP_ID=
-TRADOVATE_APP_VERSION=
+TRADOVATE_APP_VERSION=1.0
 TRADOVATE_CID=
 TRADOVATE_SEC=
 TRADOVATE_GC_CONTRACT=GCM6
-RITHMIC_GC_JSONL_PATH=/quant/calc/data/xau-state-discord/rithmic-gc.jsonl
 TRADOVATE_MAX_RECONNECT_MS=60000
-JSONL_MAX_BYTES=52428800
+RITHMIC_GC_JSONL_PATH=/quant/calc/data/xau-state-discord/rithmic-gc.jsonl
 ```
 
-Demo credentials are still credentials and must be treated as secrets.
+Demo credentials are still secrets.
 
-## Output
+## GC Contract
 
-Rows use the existing futures schema:
+Set `TRADOVATE_GC_CONTRACT` to the active GC futures contract, for example `GCM6`. Confirm the contract is listed and that the API user has market data entitlement for that venue.
+
+## Output Schema
 
 ```json
 {
@@ -47,17 +49,6 @@ Rows use the existing futures schema:
 }
 ```
 
-If a market data update only contains `Trade`, the sidecar can write a last-only row. Bid/ask rows are preferred when available.
+If only `Trade.price` is present, the sidecar can write a last-only row. The main system will score quality accordingly.
 
-## Runtime Behavior
-
-- requests an access token,
-- resolves the configured GC contract,
-- connects to the market data WebSocket,
-- authorizes the socket,
-- subscribes to `md/subscribeQuote`,
-- writes valid market data updates to JSONL,
-- reconnects with exponential backoff up to `TRADOVATE_MAX_RECONNECT_MS`,
-- logs a heartbeat every 30 seconds.
-
-The sidecar does not call order, position, liquidation, or account trading endpoints.
+The sidecar does not call order, liquidation, position, or account trading endpoints.

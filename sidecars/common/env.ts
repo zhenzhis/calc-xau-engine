@@ -1,4 +1,4 @@
-export function getEnv(name: string, fallback?: string): string | undefined {
+export function optionalEnv(name: string, fallback?: string): string | undefined {
   const value = process.env[name];
   if (value === undefined || value.trim() === "") {
     return fallback;
@@ -7,19 +7,19 @@ export function getEnv(name: string, fallback?: string): string | undefined {
 }
 
 export function requireEnv(name: string): string {
-  const value = getEnv(name);
+  const value = optionalEnv(name);
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
 }
 
-export function getNumberEnv(
+export function parseNumberEnv(
   name: string,
   fallback: number,
   options: { min?: number; max?: number } = {},
 ): number {
-  const raw = getEnv(name);
+  const raw = optionalEnv(name);
   if (raw === undefined) {
     return fallback;
   }
@@ -37,8 +37,8 @@ export function getNumberEnv(
   return value;
 }
 
-export function getBooleanEnv(name: string, fallback: boolean): boolean {
-  const raw = getEnv(name);
+export function parseBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = optionalEnv(name);
   if (raw === undefined) {
     return fallback;
   }
@@ -51,3 +51,7 @@ export function getBooleanEnv(name: string, fallback: boolean): boolean {
   }
   throw new Error(`Environment variable ${name} must be a boolean`);
 }
+
+export const getEnv = optionalEnv;
+export const getNumberEnv = parseNumberEnv;
+export const getBooleanEnv = parseBooleanEnv;

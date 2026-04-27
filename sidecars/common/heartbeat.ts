@@ -1,16 +1,18 @@
+import { safeJson } from "./redaction.js";
+
 export interface HeartbeatStatus {
-  [key: string]: string | number | boolean | null | undefined;
+  [key: string]: string | number | boolean | null | undefined | Record<string, unknown>;
 }
 
-export function startHeartbeat(
+export function createHeartbeat(
   name: string,
-  getStatus: () => HeartbeatStatus = () => ({}),
   intervalMs = 30_000,
+  getStatus: () => HeartbeatStatus = () => ({}),
 ): NodeJS.Timeout {
   const timer = setInterval(() => {
     const status = getStatus();
     console.log(
-      JSON.stringify({
+      safeJson({
         event: "heartbeat",
         sidecar: name,
         timestampMs: Date.now(),
@@ -21,3 +23,5 @@ export function startHeartbeat(
   timer.unref();
   return timer;
 }
+
+export const startHeartbeat = createHeartbeat;
