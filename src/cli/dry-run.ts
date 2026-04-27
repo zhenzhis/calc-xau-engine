@@ -1,5 +1,5 @@
 import { analyzeGold } from "../analysis/engine.js";
-import { GoldPriceClient, PriceBuffer } from "../data/client.js";
+import { MarketDataHub } from "../data/market-data-hub.js";
 import { buildDiscordPayload, publishToDiscord } from "../discord/webhook.js";
 import { Logger } from "../lib/logger.js";
 import { loadConfig } from "../config.js";
@@ -7,26 +7,20 @@ import { loadConfig } from "../config.js";
 async function main(): Promise<void> {
   const logger = new Logger("info");
   const config = loadConfig();
-  const client = new GoldPriceClient(config, logger);
+  const marketDataHub = new MarketDataHub(config, logger);
 
-  logger.info("Fetching XAUUSD quote...");
-  const quote = await client.fetchQuote();
-  logger.info("Quote received", {
-    price: quote.price,
-    change: quote.change,
-    changePct: quote.changePct,
-    previousClose: quote.previousClose,
-    timestamp: quote.timestamp
+  logger.info("Fetching market data snapshot...");
+  const snapshot = await marketDataHub.fetchSnapshot();
+  logger.info("Snapshot received", {
+    price: snapshot.primary.price,
+    symbol: snapshot.primary.symbol,
+    source: snapshot.primary.source,
+    fallback: snapshot.primary.fallback,
+    barCoverage: snapshot.barCoverage
   });
 
-  // Seed buffer with intraday candles for full indicator coverage
-  const buffer = new PriceBuffer(config.priceBufferPath);
-  await buffer.restore();
-  await client.seedBuffer(buffer);
-  buffer.push({ price: quote.price, timestamp: quote.timestamp * 1000 });
-
-  logger.info("Running analysis...", { bufferSize: buffer.length });
-  const analysis = analyzeGold(quote, buffer);
+  logger.info("Running analysis...", { barCoverage: snapshot.barCoverage });
+  const analysis = analyzeGold(snapshot);
 
   const payload = buildDiscordPayload(analysis);
 

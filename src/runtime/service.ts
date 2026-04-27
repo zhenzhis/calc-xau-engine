@@ -1,6 +1,6 @@
 import { analyzeGold } from "../analysis/engine.js";
 import { GoldAnalysis, GoldPublishState } from "../analysis/types.js";
-import { GoldPriceClient, PriceBuffer } from "../data/client.js";
+import { MarketDataHub } from "../data/market-data-hub.js";
 import { activeZone } from "../levels/grid.js";
 import { buildDiscordPayload, publishToDiscord } from "../discord/webhook.js";
 import { Logger } from "../lib/logger.js";
@@ -91,16 +91,13 @@ export class BroadcastService {
   private latestAnalysis: GoldAnalysis | null = null;
   private lastPublishedAt = 0;
   private currentSession: GoldSessionName = "weekend";
-  private readonly buffer: PriceBuffer;
 
   constructor(
     private readonly config: RuntimeConfig,
     private readonly logger: Logger,
-    private readonly client: GoldPriceClient,
+    private readonly marketDataHub: MarketDataHub,
     private readonly store: PublishStateStore
-  ) {
-    this.buffer = new PriceBuffer(config.priceBufferPath);
-  }
+  ) {}
 
   async pollOnce(): Promise<void> {
     const session = getGoldTradingSession(new Date(), this.config.marketTimezone);
@@ -115,22 +112,18 @@ export class BroadcastService {
       return;
     }
 
-    const quote = await this.client.fetchQuote();
-
-    this.buffer.push({
-      price: quote.price,
-      timestamp: quote.timestamp * 1000
-    });
-
-    this.latestAnalysis = analyzeGold(quote, this.buffer);
+    const snapshot = await this.marketDataHub.fetchSnapshot();
+    this.latestAnalysis = analyzeGold(snapshot);
 
     this.logger.info("Snapshot analyzed", {
       session: session.label,
       price: this.latestAnalysis.price,
+      source: this.latestAnalysis.data.snapshot.primary.source,
+      fallback: this.latestAnalysis.data.snapshot.primary.fallback,
       trend: this.latestAnalysis.trend,
       regime: this.latestAnalysis.regime,
       confidence: this.latestAnalysis.confidence,
-      bufferSize: this.buffer.length
+      barCoverage: this.latestAnalysis.data.barCoverage
     });
   }
 
@@ -198,7 +191,6 @@ export class BroadcastService {
         : undefined
     };
     await this.store.write(nextState);
-    await this.buffer.persist();
 
     this.logger.info("Published", {
       session: session.label,
@@ -210,15 +202,6 @@ export class BroadcastService {
   }
 
   async runLoop(): Promise<never> {
-    await this.buffer.restore();
-    this.logger.info("Buffer restored", { points: this.buffer.length });
-
-    try {
-      await this.client.seedBuffer(this.buffer);
-    } catch (error) {
-      this.logger.warn("Buffer seeding failed", error);
-    }
-
     const session = getGoldTradingSession(new Date(), this.config.marketTimezone);
     this.logger.info("Starting XAU State Discord Broadcaster", {
       session: session.label,

@@ -1,4 +1,4 @@
-import { GoldQuote, PriceBuffer } from "../data/client.js";
+import { DataSnapshot } from "../data/types.js";
 import {
   PriceLevel,
   LEVELS,
@@ -27,7 +27,6 @@ import {
   varianceRatio,
   autoCorrelation,
   kama,
-  resample,
   bollingerBands,
   linRegSlope
 } from "../lib/math.js";
@@ -712,11 +711,10 @@ function computeExpectedMove(
 // ---------------------------------------------------------------------------
 
 export function analyzeGold(
-  quote: GoldQuote,
-  buffer: PriceBuffer
+  snapshot: DataSnapshot
 ): GoldAnalysis {
-  const price = quote.price;
-  const prices = buffer.prices;
+  const price = snapshot.primary.price;
+  const prices = snapshot.bars.m1.map((bar) => bar.close);
   const hasIndicators = prices.length >= MIN_BUFFER_FOR_INDICATORS;
 
   // ── Log Returns (foundation of all returns-based metrics) ──
@@ -754,8 +752,8 @@ export function analyzeGold(
   const volRegime = hasIndicators ? classifyVolRegime(currentVol, historicalVol) : "normal";
 
   // ── Multi-Timeframe Analysis ──
-  const prices5m = resample(prices, 5);
-  const prices15m = resample(prices, 15);
+  const prices5m = snapshot.bars.m5.map((bar) => bar.close);
+  const prices15m = snapshot.bars.m15.map((bar) => bar.close);
   const returns5m = logReturns(prices5m);
   const returns15m = logReturns(prices15m);
 
@@ -835,7 +833,7 @@ export function analyzeGold(
 
   // ── Confidence (evidence-based) ──
   const confidence = computeConfidence(
-    buffer.length, trendScore, tfConfluence, normMomentum,
+    prices.length, trendScore, tfConfluence, normMomentum,
     hurstVal, vrVal, levelProximityScore, regime, volRegime
   );
 
@@ -855,12 +853,12 @@ export function analyzeGold(
   const signal = computeSignal(price, trend, trendScore, finalConfidence, atrVal, kamaVal);
 
   return {
-    asOf: quote.timestamp,
-    symbol: "XAUUSD",
+    asOf: Math.floor(snapshot.primary.timestampMs / 1000),
+    symbol: snapshot.primary.symbol,
     price: roundTo(price, 2),
-    dailyChange: roundTo(quote.change, 2),
-    dailyChangePct: roundTo(quote.changePct, 3),
-    previousClose: roundTo(quote.previousClose, 2),
+    dailyChange: roundTo(snapshot.primary.dailyChange ?? 0, 2),
+    dailyChangePct: roundTo(snapshot.primary.dailyChangePct ?? 0, 3),
+    previousClose: roundTo(snapshot.primary.previousClose ?? price, 2),
 
     ema8: emaFast !== null ? roundTo(emaFast, 2) : null,
     ema21: emaMid !== null ? roundTo(emaMid, 2) : null,
@@ -924,7 +922,16 @@ export function analyzeGold(
       tfConfluence: roundTo(tfConfluence, 4)
     },
 
-    bufferSize: buffer.length,
-    bufferDurationMin: roundTo(buffer.durationMs() / 60_000, 1)
+    bufferSize: snapshot.bars.m1.length,
+    bufferDurationMin: snapshot.bars.m1.length > 1
+      ? roundTo((snapshot.bars.m1[snapshot.bars.m1.length - 1].endMs - snapshot.bars.m1[0].startMs) / 60_000, 1)
+      : 0,
+
+    data: {
+      snapshot,
+      sourceHealth: snapshot.sourceHealth,
+      basis: snapshot.basis,
+      barCoverage: snapshot.barCoverage
+    }
   };
 }

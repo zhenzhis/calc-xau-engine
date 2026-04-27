@@ -1,5 +1,6 @@
 import { PriceLevel, PriceZone } from "../levels/grid.js";
 import { HeadAndShouldersPattern } from "./patterns.js";
+import { BarCoverage, BrokerBasis, DataSnapshot, SourceHealth } from "../data/types.js";
 
 // ---------------------------------------------------------------------------
 // Market regime classification
@@ -46,7 +47,7 @@ export interface TradingSignal {
 
 export interface GoldAnalysis {
   asOf: number;             // Unix timestamp (seconds)
-  symbol: string;           // "XAUUSD"
+  symbol: string;           // analysis instrument, e.g. GC=F fallback or GC futures
   price: number;            // Current spot price
   dailyChange: number;
   dailyChangePct: number;
@@ -131,6 +132,14 @@ export interface GoldAnalysis {
   // --- Buffer stats ---
   bufferSize: number;
   bufferDurationMin: number;
+
+  // --- Data provenance ---
+  data: {
+    snapshot: DataSnapshot;
+    sourceHealth: SourceHealth[];
+    basis: BrokerBasis;
+    barCoverage: BarCoverage;
+  };
 }
 
 // ---------------------------------------------------------------------------

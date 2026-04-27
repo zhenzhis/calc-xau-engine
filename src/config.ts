@@ -30,6 +30,17 @@ function parseBoolean(name: string, fallback: boolean): boolean {
   throw new Error(`Invalid boolean environment variable: ${name}=${raw}`);
 }
 
+function parseDataPrimary(): RuntimeConfig["dataPrimary"] {
+  const raw = process.env.DATA_PRIMARY?.trim().toLowerCase() || "auto";
+  if (raw === "auto" || raw === "rithmic" || raw === "yahoo") return raw;
+  throw new Error(`Invalid DATA_PRIMARY: ${raw}`);
+}
+
+function optionalPath(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? resolve(value) : undefined;
+}
+
 export function loadConfig(): RuntimeConfig {
   const logLevel = (process.env.LOG_LEVEL?.trim().toLowerCase() ??
     "info") as RuntimeConfig["logLevel"];
@@ -46,6 +57,14 @@ export function loadConfig(): RuntimeConfig {
     priceBufferPath: resolve(
       process.env.PRICE_BUFFER_PATH?.trim() || ".runtime/price-buffer.json"
     ),
+    dataPrimary: parseDataPrimary(),
+    enableYahooFallback: parseBoolean("ENABLE_YAHOO_FALLBACK", true),
+    rithmicGcJsonlPath: optionalPath("RITHMIC_GC_JSONL_PATH"),
+    pepperstoneXauJsonlPath: optionalPath("PEPPERSTONE_XAU_JSONL_PATH"),
+    minSourceQuality: parseNumber("MIN_SOURCE_QUALITY", 60),
+    maxTickAgeMs: parseNumber("MAX_TICK_AGE_MS", 15_000),
+    maxCandleAgeMs: parseNumber("MAX_CANDLE_AGE_MS", 120_000),
+    enableBrokerBasis: parseBoolean("ENABLE_BROKER_BASIS", true),
     pollIntervalMs: parseNumber("POLL_INTERVAL_MS", 60_000),
     publishIntervalMs: parseNumber("PUBLISH_INTERVAL_MS", 900_000),
     requestTimeoutMs: parseNumber("REQUEST_TIMEOUT_MS", 6_000),

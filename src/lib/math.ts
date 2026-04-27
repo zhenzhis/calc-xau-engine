@@ -342,21 +342,6 @@ export function kama(
 }
 
 /**
- * Downsample by taking every Nth point, aligned to the latest value.
- * For multi-timeframe analysis: resample(prices, 5) → 5-minute bars.
- */
-export function resample(values: number[], factor: number): number[] {
-  if (factor <= 1 || values.length < factor) return values.slice();
-
-  const result: number[] = [];
-  const startOffset = (values.length - 1) % factor;
-  for (let i = startOffset; i < values.length; i += factor) {
-    result.push(values[i]);
-  }
-  return result;
-}
-
-/**
  * Bollinger Bands — bandwidth and %B.
  * Low bandwidth → squeeze → imminent breakout.
  * %B > 1 → above upper band (overbought), %B < 0 → below lower (oversold).

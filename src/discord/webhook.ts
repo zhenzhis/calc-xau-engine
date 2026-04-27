@@ -96,7 +96,8 @@ export function buildDiscordPayload(
   const sig = signalEmoji(a.signal.direction, a.confidence);
 
   // ── Title ──
-  const title = `XAUUSD │ ${fp(a.price)} (${fPct(a.dailyChangePct)}) │ ${sig} ${a.signal.direction}`;
+  const sourceTag = `${a.data.snapshot.primary.source}${a.data.snapshot.primary.fallback ? " fallback" : ""}`;
+  const title = `XAU State │ ${a.symbol} │ ${fp(a.price)} (${fPct(a.dailyChangePct)}) │ ${sig} ${a.signal.direction}`;
 
   // ── Description: signal + context ──
   const desc: string[] = [];
@@ -106,7 +107,7 @@ export function buildDiscordPayload(
   );
 
   if (sessionLabel) {
-    desc.push(`**时段: ${sessionLabel}** │ 波动率: ${fVolRegime(a.volRegime)}`);
+    desc.push(`**时段: ${sessionLabel}** │ 波动率: ${fVolRegime(a.volRegime)} │ source=${sourceTag}`);
   }
 
   if (triggerReason) {
@@ -284,6 +285,8 @@ export function buildDiscordPayload(
     `nmom=${a.normalizedMomentum?.toFixed(1) ?? "-"}`,
     `tf=${a.tf.confluence.toFixed(2)}`,
     `buf=${a.bufferSize}/${a.bufferDurationMin.toFixed(0)}m`,
+    `source=${sourceTag}`,
+    `health=${a.data.sourceHealth.map((h) => `${h.source}:${h.qualityScore}${h.stale ? " stale" : ""}`).join(",")}`,
   ].join(" │ ");
 
   return {
