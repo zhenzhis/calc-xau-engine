@@ -57,6 +57,9 @@ export function loadConfig(): RuntimeConfig {
     priceBufferPath: resolve(
       process.env.PRICE_BUFFER_PATH?.trim() || ".runtime/price-buffer.json"
     ),
+    analysisSnapshotPath: resolve(
+      process.env.ANALYSIS_SNAPSHOT_PATH?.trim() || ".runtime/analysis-snapshots.jsonl"
+    ),
     dataPrimary: parseDataPrimary(),
     enableYahooFallback: parseBoolean("ENABLE_YAHOO_FALLBACK", true),
     rithmicGcJsonlPath: optionalPath("RITHMIC_GC_JSONL_PATH"),

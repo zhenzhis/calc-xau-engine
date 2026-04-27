@@ -9,6 +9,7 @@
     "start": "npm run build && node --env-file-if-exists=.env dist/main.js",
     "dev": "npm run start",
     "dry-run": "npm run build && node --env-file-if-exists=.env dist/cli/dry-run.js",
+    "research": "npm run build && node --env-file-if-exists=.env dist/cli/research-report.js",
     "test": "npm run build && node --test --test-isolation=none dist/runtime/market-hours.test.js"
   },
   "dependencies": {

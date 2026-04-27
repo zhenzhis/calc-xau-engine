@@ -6,6 +6,7 @@ import { activeZone } from "../levels/grid.js";
 import { buildDiscordPayload, publishToDiscord } from "../discord/webhook.js";
 import { Logger } from "../lib/logger.js";
 import { FredProvider } from "../macro/fred-provider.js";
+import { AnalysisSnapshotStore } from "../research/snapshot-store.js";
 import { RuntimeConfig } from "../types.js";
 import { getGoldTradingSession, GoldSessionName } from "./market-hours.js";
 import { PublishStateStore } from "./state-store.js";
@@ -94,6 +95,7 @@ export class BroadcastService {
   private lastPublishedAt = 0;
   private currentSession: GoldSessionName = "weekend";
   private readonly fredProvider: FredProvider;
+  private readonly snapshotStore: AnalysisSnapshotStore;
 
   constructor(
     private readonly config: RuntimeConfig,
@@ -102,6 +104,7 @@ export class BroadcastService {
     private readonly store: PublishStateStore
   ) {
     this.fredProvider = new FredProvider(config);
+    this.snapshotStore = new AnalysisSnapshotStore(config.analysisSnapshotPath);
   }
 
   async pollOnce(): Promise<void> {
@@ -128,6 +131,7 @@ export class BroadcastService {
       macroDrivers: this.fredProvider.deriveDrivers(macro),
       eventRisk
     });
+    await this.snapshotStore.append(this.latestAnalysis, session.name);
 
     this.logger.info("Snapshot analyzed", {
       session: session.label,

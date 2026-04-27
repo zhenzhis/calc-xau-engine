@@ -2,6 +2,7 @@ export interface RuntimeConfig {
   discordWebhookUrl: string;
   publishStatePath: string;
   priceBufferPath: string;
+  analysisSnapshotPath: string;
   dataPrimary: "auto" | "rithmic" | "yahoo";
   enableYahooFallback: boolean;
   rithmicGcJsonlPath?: string;
