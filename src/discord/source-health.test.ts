@@ -3,7 +3,9 @@ import test from "node:test";
 
 import { analyzeGold } from "../analysis/engine.js";
 import { buildDiscordPayload } from "./webhook.js";
+import { aggregateCandles } from "../data/bar-builder.js";
 import { Candle, DataSnapshot, InstrumentKind, SourceHealth } from "../data/types.js";
+import { emptyMacroDrivers } from "../macro/types.js";
 
 function sourceHealth(
   source: SourceHealth["source"],
@@ -30,11 +32,15 @@ function candles(options: {
   source?: Candle["source"];
   instrumentKind?: InstrumentKind;
   qualityScore?: number;
+  count?: number;
+  step?: number;
 } = {}): Candle[] {
   const start = Date.UTC(2026, 0, 1, 0, 0, 0);
   const base = options.base ?? 2300;
-  return Array.from({ length: 80 }, (_, i) => {
-    const open = base + i * 0.25;
+  const count = options.count ?? 240;
+  const step = options.step ?? 0.25;
+  return Array.from({ length: count }, (_, i) => {
+    const open = base + i * step;
     return {
       symbol: options.symbol ?? "GC=F",
       source: options.source ?? "yahoo",
@@ -59,26 +65,40 @@ function brokerSnapshot(options: {
   testData?: boolean;
   dailyChangePct?: number;
   includeBasisSpread?: boolean;
+  count?: number;
+  step?: number;
+  spread?: number;
+  futuresFlowStatus?: DataSnapshot["futuresFlowStatus"];
+  m5CompleteRatio?: number;
+  m15CompleteRatio?: number;
+  activeQuality?: number;
+  stale?: boolean;
 } = {}): DataSnapshot {
   const m1 = candles({
     base: options.base ?? 4700,
     symbol: "XAUUSD",
     source: "pepperstone",
     instrumentKind: "broker_spot",
-    qualityScore: options.testData ? 20 : 90
+    qualityScore: options.testData ? 20 : options.activeQuality ?? 90,
+    count: options.count,
+    step: options.step
   });
   const last = m1[m1.length - 1];
-  const bid = Number((last.close - 0.1).toFixed(2));
-  const ask = Number((last.close + 0.1).toFixed(2));
+  const spread = options.spread ?? 0.2;
+  const bid = Number((last.close - spread / 2).toFixed(2));
+  const ask = Number((last.close + spread / 2).toFixed(2));
   const provenance = options.testData
     ? { feed: "synthetic_test", sidecar: "test-generator", sessionVerified: false, testData: true }
     : { feed: "ctrader_fix", sidecar: "pepperstone-ctrader-fix", sessionVerified: true, testData: false };
+  const wideSpread = spread > 5;
   const pepperstone = sourceHealth(
     "pepperstone",
-    options.testData ? 20 : 90,
+    options.testData ? 20 : wideSpread ? 50 : options.activeQuality ?? 90,
     options.testData ? "synthetic/test Pepperstone feed" : undefined,
-    provenance
+    { ...provenance, stale: options.stale ?? false, warning: wideSpread ? "broker spread wide" : undefined }
   );
+  const m5 = aggregateCandles(m1, "5m");
+  const m15 = aggregateCandles(m1, "15m");
   const primary = {
     symbol: "XAUUSD",
     source: "pepperstone" as const,
@@ -102,7 +122,7 @@ function brokerSnapshot(options: {
       bid,
       ask,
       mid: last.close,
-      qualityScore: options.testData ? 20 : 90,
+      qualityScore: options.testData ? 20 : wideSpread ? 50 : options.activeQuality ?? 90,
       ...provenance
     },
     basis: options.includeBasisSpread ? { available: false, brokerSpread: 0.2 } : { available: false },
@@ -117,16 +137,17 @@ function brokerSnapshot(options: {
       sourceHealth("yahoo", 0, "Yahoo reference unavailable"),
       pepperstone
     ],
-    futuresFlowStatus: "unknown",
-    bars: { m1, m5: [], m15: [], h1: [] },
+    futuresFlowStatus: options.futuresFlowStatus ?? "unknown",
+    qualityPolicy: { minSourceQuality: 60, maxBrokerSpread: 5 },
+    bars: { m1, m5, m15, h1: [] },
     barCoverage: {
       m1: m1.length,
-      m5: 0,
-      m15: 0,
+      m5: m5.length,
+      m15: m15.length,
       h1: 0,
       m1CompleteRatio: 1,
-      m5CompleteRatio: 0,
-      m15CompleteRatio: 0,
+      m5CompleteRatio: options.m5CompleteRatio ?? 1,
+      m15CompleteRatio: options.m15CompleteRatio ?? 1,
       h1CompleteRatio: 0
     }
   };
@@ -203,6 +224,7 @@ test("Synthetic Pepperstone feed is marked test data and blocks trade permission
 
   assert.ok(snapshot.activePrimaryHealth.qualityScore <= 20);
   assert.equal(analysis.eventRisk.tradePermission, "blocked");
+  assert.equal(analysis.recommendationLevel, "no-trade");
   assert.equal(analysis.signal.direction, "FLAT");
   assert.ok(analysis.confidence <= 10);
   assert.match(payload.embeds[0].title, /TEST DATA/);
@@ -238,6 +260,7 @@ test("Broker primary with unknown futures and macro remains non-actionable", () 
   const analysis = analyzeGold(brokerSnapshot({ base: 4700, dailyChangePct: 0.12 }));
 
   assert.equal(analysis.eventRisk.tradePermission, "watch-only");
+  assert.equal(analysis.recommendationLevel, "watch-only");
   assert.equal(analysis.signal.direction, "FLAT");
   assert.ok(analysis.confidence <= 35);
 });
@@ -247,4 +270,86 @@ test("Undefined dailyChangePct displays n/a instead of zero percent", () => {
 
   assert.match(payload.embeds[0].description, /change=n\/a/);
   assert.doesNotMatch(payload.embeds[0].description, /change=\+0\.00%/);
+});
+
+test("Wide broker spread is no-trade and marked in the title", () => {
+  const analysis = analyzeGold(brokerSnapshot({ base: 4700, spread: 6, dailyChangePct: 0.12 }));
+  const payload = buildDiscordPayload(analysis) as { embeds: Array<{ title: string; footer: { text: string } }> };
+
+  assert.equal(analysis.recommendationLevel, "no-trade");
+  assert.equal(analysis.signal.direction, "FLAT");
+  assert.match(payload.embeds[0].title, /SPREAD WIDE/);
+  assert.match(payload.embeds[0].footer.text, /warning=broker spread wide/);
+});
+
+test("Insufficient 1m sample caps recommendation and confidence", () => {
+  const noTrade = analyzeGold(brokerSnapshot({
+    base: 4700,
+    count: 100,
+    futuresFlowStatus: "confirmed",
+    dailyChangePct: 0.12
+  }), {
+    macroDrivers: { ...emptyMacroDrivers(), macroBias: "bullish-gold" }
+  });
+  const watchOnly = analyzeGold(brokerSnapshot({
+    base: 4700,
+    count: 180,
+    futuresFlowStatus: "confirmed",
+    dailyChangePct: 0.12
+  }), {
+    macroDrivers: { ...emptyMacroDrivers(), macroBias: "bullish-gold" }
+  });
+
+  assert.equal(noTrade.recommendationLevel, "no-trade");
+  assert.equal(watchOnly.recommendationLevel, "watch-only");
+  assert.ok(noTrade.confidence <= 40);
+  assert.ok(watchOnly.confidence <= 40);
+});
+
+test("Poor m5 or m15 completeness keeps recommendation watch-only", () => {
+  const analysis = analyzeGold(brokerSnapshot({
+    base: 4700,
+    futuresFlowStatus: "confirmed",
+    m5CompleteRatio: 0.85,
+    m15CompleteRatio: 0.95,
+    dailyChangePct: 0.12
+  }), {
+    macroDrivers: { ...emptyMacroDrivers(), macroBias: "bullish-gold" }
+  });
+
+  assert.equal(analysis.recommendationLevel, "watch-only");
+  assert.equal(analysis.signal.direction, "FLAT");
+  assert.ok(analysis.confidence <= 40);
+});
+
+test("Watch-only Discord setup does not display execution instructions", () => {
+  const payload = payloadFor(brokerSnapshot({ base: 4700, dailyChangePct: 0.12 }));
+  const embedText = JSON.stringify(payload.embeds[0]);
+  const setup = payload.embeds[0].fields.find((field) => field.name === "Setup")?.value ?? "";
+
+  assert.match(payload.embeds[0].title, /WATCH/);
+  assert.doesNotMatch(setup, /Setup zone|Reference targets|Targets:|Stop|stop-loss/i);
+  assert.match(setup, /Reference only/);
+  assert.doesNotMatch(embedText, /ACTIONABLE/);
+});
+
+test("Conditional setup only appears when all gates are satisfied", () => {
+  const analysis = analyzeGold(brokerSnapshot({
+    base: 4700,
+    step: 0.5,
+    futuresFlowStatus: "confirmed",
+    dailyChangePct: 0.12
+  }), {
+    macroDrivers: { ...emptyMacroDrivers(), macroBias: "bullish-gold" }
+  });
+  const payload = buildDiscordPayload(analysis) as {
+    embeds: Array<{ title: string; fields: Array<{ name: string; value: string }> }>;
+  };
+  const setup = payload.embeds[0].fields.find((field) => field.name === "Setup")?.value ?? "";
+
+  assert.equal(analysis.recommendationLevel, "conditional-setup");
+  assert.match(payload.embeds[0].title, /CONDITIONAL-/);
+  assert.match(setup, /Reference levels, not execution order/);
+  assert.match(setup, /Reference targets/);
+  assert.doesNotMatch(JSON.stringify(payload), /ACTIONABLE/);
 });

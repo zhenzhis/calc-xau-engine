@@ -28,6 +28,7 @@ test("DATA_PRIMARY=broker is accepted with Pepperstone broker source", () => {
     const config = loadConfig();
     assert.equal(config.dataPrimary, "broker");
     assert.equal(config.brokerPrimarySource, "pepperstone");
+    assert.equal(config.maxBrokerSpread, 5);
   });
 });
 

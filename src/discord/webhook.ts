@@ -88,35 +88,47 @@ function levelGridUnavailable(a: GoldAnalysis): boolean {
 }
 
 function brokerSpreadLabel(a: GoldAnalysis): string {
+  const spread = brokerSpreadValue(a);
+  return spread !== null ? fp(spread) : "unavailable";
+}
+
+function brokerSpreadValue(a: GoldAnalysis): number | null {
   const tick = a.data.snapshot.xauBrokerTick;
   if (tick?.bid !== undefined && tick.ask !== undefined && tick.ask > tick.bid) {
-    return fp(tick.ask - tick.bid);
+    return tick.ask - tick.bid;
   }
-  return a.data.basis.brokerSpread !== undefined ? fp(a.data.basis.brokerSpread) : "unavailable";
+  return a.data.basis.brokerSpread ?? null;
+}
+
+function spreadWide(a: GoldAnalysis): boolean {
+  const spread = brokerSpreadValue(a);
+  const max = a.data.snapshot.qualityPolicy?.maxBrokerSpread ?? 5;
+  return spread !== null && spread > max;
 }
 
 function dailyChangeLabel(a: GoldAnalysis): string {
   return a.data.snapshot.primary.dailyChangePct === undefined ? "n/a" : fPct(a.dailyChangePct);
 }
 
-function stateLabel(a: GoldAnalysis): "LONG-PULLBACK" | "SHORT-REJECTION" | "RANGE-WATCH" | "NO-TRADE" {
-  if (a.eventRisk.tradePermission === "blocked") return "NO-TRADE";
-  if (levelGridUnavailable(a)) return "NO-TRADE";
-  if (a.data.snapshot.activePrimaryHealth.qualityScore < 25) {
-    return "NO-TRADE";
+function stateLabel(a: GoldAnalysis): "CONDITIONAL-LONG" | "CONDITIONAL-SHORT" | "LONG-WATCH" | "SHORT-WATCH" | "RANGE-WATCH" | "NO-TRADE" {
+  if (a.recommendationLevel === "no-trade") return "NO-TRADE";
+  if (a.recommendationLevel === "conditional-setup") {
+    if (a.trend === "bullish" && a.signal.direction !== "FLAT") return "CONDITIONAL-LONG";
+    if (a.trend === "bearish" && a.signal.direction !== "FLAT") return "CONDITIONAL-SHORT";
   }
-  if (a.trend === "bullish" && a.signal.direction !== "FLAT") return "LONG-PULLBACK";
-  if (a.trend === "bearish" && a.signal.direction !== "FLAT") return "SHORT-REJECTION";
+  if (a.trend === "bullish") return "LONG-WATCH";
+  if (a.trend === "bearish") return "SHORT-WATCH";
   return "RANGE-WATCH";
 }
 
 function preferredAction(a: GoldAnalysis): string {
-  if (a.eventRisk.tradePermission === "blocked") return "No trade";
-  if (levelGridUnavailable(a)) return "No trade";
-  if (a.eventRisk.tradePermission === "watch-only") return "Watch only";
+  if (a.recommendationLevel === "no-trade") return "No trade";
+  if (a.recommendationLevel === "watch-only") return "Watch only";
   const state = stateLabel(a);
-  if (state === "LONG-PULLBACK") return "Long pullback watch";
-  if (state === "SHORT-REJECTION") return "Short rejection watch";
+  if (state === "CONDITIONAL-LONG") return "Conditional long setup";
+  if (state === "CONDITIONAL-SHORT") return "Conditional short setup";
+  if (state === "LONG-WATCH") return "Long watch";
+  if (state === "SHORT-WATCH") return "Short watch";
   if (state === "RANGE-WATCH") return "Range watch";
   return "No trade";
 }
@@ -126,8 +138,10 @@ function sourceHealthText(a: GoldAnalysis): string {
   const brokerHealth = a.data.snapshot.brokerHealth;
   const activeFeed = activeHealth.feed ? `/${activeHealth.feed}` : "";
   const brokerFeed = brokerHealth.feed ? `/${brokerHealth.feed}` : "";
-  const active = `active=${activeHealth.source}:${activeHealth.qualityScore}${activeHealth.stale ? "/stale" : ""}${activeHealth.testData ? "/test" : ""}${activeFeed}`;
-  const broker = `broker=${brokerHealth.source}:${brokerHealth.qualityScore}${brokerHealth.stale ? "/stale" : ""}${brokerHealth.testData ? "/test" : ""}${brokerFeed}`;
+  const activeWarning = activeHealth.warning ? `/warning=${activeHealth.warning}` : "";
+  const brokerWarning = brokerHealth.warning ? `/warning=${brokerHealth.warning}` : "";
+  const active = `active=${activeHealth.source}:${activeHealth.qualityScore}${activeHealth.stale ? "/stale" : ""}${activeHealth.testData ? "/test" : ""}${activeFeed}${activeWarning}`;
+  const broker = `broker=${brokerHealth.source}:${brokerHealth.qualityScore}${brokerHealth.stale ? "/stale" : ""}${brokerHealth.testData ? "/test" : ""}${brokerFeed}${brokerWarning}`;
   const optional = a.data.snapshot.optionalSourceHealth
     .map((h) => `${h.source}:${h.qualityScore}${h.stale ? "/stale" : ""}`)
     .join(",");
@@ -210,7 +224,7 @@ function keyLevels(a: GoldAnalysis): string {
 function setupField(a: GoldAnalysis): string {
   const brokerPrimary = isBrokerPrimary(a);
   const gridUnavailable = levelGridUnavailable(a);
-  const setupValid = a.eventRisk.tradePermission === "allowed" && stateLabel(a) !== "NO-TRADE" && !gridUnavailable;
+  const setupValid = a.recommendationLevel === "conditional-setup" && !gridUnavailable;
   const primaryOk = a.data.snapshot.activePrimaryHealth.qualityScore >= 60;
   const brokerOk = a.data.snapshot.xauBrokerTick !== null && a.data.snapshot.brokerHealth.qualityScore >= 60;
   const invalidation = gridUnavailable
@@ -237,11 +251,17 @@ function setupField(a: GoldAnalysis): string {
 
   const lines = [
     `Preferred action: ${preferredAction(a)}`,
-    `Invalidation: ${gridUnavailable ? "n/a" : invalidation !== undefined ? fp(invalidation) : "range break required"}`,
     `Conditions needed: ${conditions.join("; ")}`
   ];
-  if (setupValid && a.signal.targets.length > 0) {
-    lines.push(`Targets: ${a.signal.targets.slice(0, 2).map(fp).join(" / ")}`);
+  if (!setupValid) {
+    lines.push("Reference only: no execution levels while recommendation is no-trade/watch-only");
+  } else {
+    lines.push(`Setup zone: ${fp(a.signal.entry)}`);
+    lines.push(`Invalidation: ${invalidation !== undefined ? fp(invalidation) : "range break required"}`);
+    if (a.signal.targets.length > 0) {
+      lines.push(`Reference targets: ${a.signal.targets.slice(0, 2).map(fp).join(" / ")}`);
+    }
+    lines.push("Reference levels, not execution order");
   }
   if (a.patternWatch) {
     lines.push(`Pattern watch: H&S ${a.patternWatch.timeframe}, watch-only, unconfirmed by volume/backtest`);
@@ -251,12 +271,13 @@ function setupField(a: GoldAnalysis): string {
 
 function diagnostics(a: GoldAnalysis): string {
   const scoreNote = isBrokerPrimary(a) ? " (uncalibrated broker-price score)" : "";
+  const sampleNote = a.bufferSize < 240 ? " (unstable sample)" : "";
   return [
     `RSI(14): ${a.rsi14?.toFixed(1) ?? "n/a"}`,
     `ATR(true): ${a.atr !== null ? fp(a.atr) : "n/a"}`,
     `Realized vol: ${a.realizedVol !== null ? `${a.realizedVol.toFixed(2)}%` : "n/a"}`,
-    `VR(5): ${a.varianceRatio?.toFixed(2) ?? "n/a"}`,
-    `Hurst: ${a.hurst?.toFixed(2) ?? "n/a"}`,
+    `VR(5): ${a.varianceRatio?.toFixed(2) ?? "n/a"}${sampleNote}`,
+    `Hurst: ${a.hurst?.toFixed(2) ?? "n/a"}${sampleNote}`,
     `Breakout scores: up=${a.breakoutScoreUp.toFixed(2)} down=${a.breakoutScoreDown.toFixed(2)}${scoreNote}`
   ].join("\n");
 }
@@ -276,6 +297,7 @@ export function buildDiscordPayload(
     isTestData(a) ? "TEST DATA" : null,
     brokerPrimary ? "BROKER PRIMARY" : null,
     brokerPrimary && a.data.futuresFlowStatus === "unknown" ? "FUTURES FLOW UNKNOWN" : null,
+    spreadWide(a) ? "SPREAD WIDE" : null,
     primaryDegraded ? "PRIMARY DATA DEGRADED" : null,
     fallback ? "FALLBACK DATA" : null,
     brokerMissing ? "BROKER QUOTE MISSING" : null
@@ -307,6 +329,7 @@ export function buildDiscordPayload(
   const stateSummary = [
     `Macro regime: ${a.macroDrivers.macroBias}`,
     `Futures flow: ${a.data.futuresFlowStatus}${a.data.futuresFlowStatus === "confirmed" ? ` / tf=${a.tf.confluence.toFixed(2)}` : ""}`,
+    `Recommendation: ${a.recommendationLevel}`,
     `Level grid: ${a.levelGridStatus}`,
     `Volatility: ${volLabel(a.volRegime)}`,
     `Session: ${sessionLabel ?? "n/a"}`,
@@ -322,6 +345,7 @@ export function buildDiscordPayload(
     "model=xau_state_v2",
     `mode=${brokerPrimary ? "broker-primary" : "standard"}`,
     `futuresFlow=${a.data.futuresFlowStatus}`,
+    `recommendation=${a.recommendationLevel}`,
     `levelGrid=${a.levelGridStatus}`,
     "scores=uncalibrated",
     `sourceHealth=${sourceHealthText(a)}`,

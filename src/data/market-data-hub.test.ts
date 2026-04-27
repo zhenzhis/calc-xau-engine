@@ -22,6 +22,7 @@ function config(pepperstonePath: string): RuntimeConfig {
     minSourceQuality: 60,
     maxTickAgeMs: 15_000,
     maxCandleAgeMs: 120_000,
+    maxBrokerSpread: 5,
     enableBrokerBasis: false,
     enableFred: false,
     fredCachePath: ".runtime/fred-cache.json",

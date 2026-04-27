@@ -133,13 +133,16 @@ export class PepperstoneFileProvider implements DataProvider {
       const ageMs = Date.now() - last.timestampMs;
       const stale = ageMs > this.config.maxTickAgeMs;
       const spread = last.ask !== undefined && last.bid !== undefined ? last.ask - last.bid : 0;
-      const spreadPenalty = spread > 1 ? 20 : 0;
+      const spreadWide = spread > this.config.maxBrokerSpread;
+      const spreadPenalty = spreadWide ? 45 : spread > 1 ? 20 : 0;
       const isTest = last.testData === true || last.feed === "synthetic_test";
       const productionQuality = Math.max(60, 95 - spreadPenalty);
-      const qualityScore = stale ? Math.min(isTest ? 20 : productionQuality, 40) : isTest ? 20 : productionQuality;
+      const qualityScore = stale
+        ? Math.min(isTest ? 20 : spreadWide ? 50 : productionQuality, 40)
+        : isTest ? 20 : spreadWide ? Math.min(productionQuality, 50) : productionQuality;
       this.health = {
         source: "pepperstone",
-        ok: !stale && !isTest,
+        ok: !stale && !isTest && !spreadWide,
         lastUpdateMs: last.timestampMs,
         ageMs,
         latencyMs: Date.now() - start,
@@ -149,7 +152,11 @@ export class PepperstoneFileProvider implements DataProvider {
           : isTest
             ? "synthetic/test Pepperstone feed"
             : undefined,
-        warning: isTest ? "synthetic/test feed; not production cTrader FIX" : undefined,
+        warning: isTest
+          ? "synthetic/test feed; not production cTrader FIX"
+          : spreadWide
+            ? "broker spread wide"
+            : undefined,
         feed: last.feed,
         sidecar: last.sidecar,
         sessionVerified: last.sessionVerified,

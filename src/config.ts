@@ -74,6 +74,7 @@ export function loadConfig(): RuntimeConfig {
     minSourceQuality: parseNumber("MIN_SOURCE_QUALITY", 60),
     maxTickAgeMs: parseNumber("MAX_TICK_AGE_MS", 15_000),
     maxCandleAgeMs: parseNumber("MAX_CANDLE_AGE_MS", 120_000),
+    maxBrokerSpread: parseNumber("MAX_BROKER_SPREAD", 5),
     enableBrokerBasis: parseBoolean("ENABLE_BROKER_BASIS", true),
     enableFred: parseBoolean("ENABLE_FRED", true),
     fredCachePath: resolve(process.env.FRED_CACHE_PATH?.trim() || ".runtime/fred-cache.json"),

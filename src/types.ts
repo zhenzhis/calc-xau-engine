@@ -11,6 +11,7 @@ export interface RuntimeConfig {
   minSourceQuality: number;
   maxTickAgeMs: number;
   maxCandleAgeMs: number;
+  maxBrokerSpread: number;
   enableBrokerBasis: boolean;
   enableFred: boolean;
   fredCachePath: string;

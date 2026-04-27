@@ -155,6 +155,10 @@ export class MarketDataHub {
       ),
       sourceHealth,
       futuresFlowStatus,
+      qualityPolicy: {
+        minSourceQuality: this.config.minSourceQuality,
+        maxBrokerSpread: this.config.maxBrokerSpread
+      },
       bars: { m1, m5, m15, h1 },
       barCoverage: {
         m1: m1.length,
@@ -211,7 +215,11 @@ export class MarketDataHub {
       (broker.tick !== null || broker.candles.length > 0);
     const brokerUsable =
       brokerHasFreshRows &&
-      (broker.health.qualityScore >= this.config.minSourceQuality || broker.health.testData === true);
+      (
+        broker.health.qualityScore >= this.config.minSourceQuality ||
+        broker.health.testData === true ||
+        broker.health.warning === "broker spread wide"
+      );
     const yahooUsable =
       this.config.enableYahooFallback &&
       (yahoo.tick !== null || yahoo.candles.length > 0);

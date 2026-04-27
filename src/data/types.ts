@@ -103,6 +103,11 @@ export interface BarCoverage {
   h1CompleteRatio: number;
 }
 
+export interface DataQualityPolicy {
+  minSourceQuality: number;
+  maxBrokerSpread: number;
+}
+
 export interface DataSnapshot {
   asOfMs: number;
   primary: AnalysisPrice;
@@ -115,6 +120,7 @@ export interface DataSnapshot {
   optionalSourceHealth: SourceHealth[];
   sourceHealth: SourceHealth[];
   futuresFlowStatus: FuturesFlowStatus;
+  qualityPolicy?: DataQualityPolicy;
   bars: {
     m1: Candle[];
     m5: Candle[];

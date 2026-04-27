@@ -39,7 +39,8 @@ import {
   VolatilityRegime,
   TimeframeSummary,
   TradingSignal,
-  LevelGridStatus
+  LevelGridStatus,
+  RecommendationLevel
 } from "./types.js";
 import { detectHeadAndShoulders } from "./patterns.js";
 import { EventRisk } from "../events/event-calendar.js";
@@ -60,6 +61,8 @@ const HURST_MIN_POINTS = 20;
 const VR_PERIOD = 5;        // Variance ratio look-back multiplier
 const KAMA_ER_PERIOD = 10;  // KAMA efficiency ratio period
 const BB_PERIOD = 20;       // Bollinger Band period
+const DEFAULT_MIN_SOURCE_QUALITY = 60;
+const DEFAULT_MAX_BROKER_SPREAD = 5;
 
 export interface AnalysisContext {
   macro?: MacroSnapshot | null;
@@ -114,6 +117,23 @@ function isSyntheticOrTestFeed(snapshot: DataSnapshot): boolean {
   );
 }
 
+function brokerSpread(snapshot: DataSnapshot): number | null {
+  const tick = snapshot.xauBrokerTick;
+  if (tick?.bid !== undefined && tick.ask !== undefined && tick.ask > tick.bid) {
+    return tick.ask - tick.bid;
+  }
+  return snapshot.basis.brokerSpread ?? null;
+}
+
+function isRealCTraderFeed(snapshot: DataSnapshot): boolean {
+  return (
+    snapshot.activePrimaryHealth.feed === "ctrader_fix" &&
+    snapshot.activePrimaryHealth.sessionVerified === true &&
+    snapshot.activePrimaryHealth.testData !== true &&
+    snapshot.xauBrokerTick?.testData !== true
+  );
+}
+
 function forceFlatSignal(signal: TradingSignal, price: number): TradingSignal {
   return {
     ...signal,
@@ -124,6 +144,84 @@ function forceFlatSignal(signal: TradingSignal, price: number): TradingSignal {
     targets: [],
     riskReward: 0
   };
+}
+
+function capRecommendation(
+  current: RecommendationLevel,
+  cap: RecommendationLevel
+): RecommendationLevel {
+  const rank: Record<RecommendationLevel, number> = {
+    "no-trade": 0,
+    "watch-only": 1,
+    "conditional-setup": 2,
+    actionable: 3
+  };
+  return rank[current] <= rank[cap] ? current : cap;
+}
+
+function computeRecommendationLevel(options: {
+  snapshot: DataSnapshot;
+  eventRisk: EventRisk;
+  confidence: number;
+  tfConfluence: number;
+  bufferSize: number;
+  levelGridStatus: LevelGridStatus;
+  testFeed: boolean;
+  isBrokerPrimary: boolean;
+  macroBias: MacroDrivers["macroBias"];
+}): RecommendationLevel {
+  const policy = options.snapshot.qualityPolicy ?? {
+    minSourceQuality: DEFAULT_MIN_SOURCE_QUALITY,
+    maxBrokerSpread: DEFAULT_MAX_BROKER_SPREAD
+  };
+  const spread = brokerSpread(options.snapshot);
+  const spreadValid = spread !== null && spread <= policy.maxBrokerSpread;
+  const coverage = options.snapshot.barCoverage;
+  const active = options.snapshot.activePrimaryHealth;
+  const realCTrader = isRealCTraderFeed(options.snapshot);
+
+  if (
+    options.testFeed ||
+    active.qualityScore < policy.minSourceQuality ||
+    active.stale ||
+    !spreadValid ||
+    options.levelGridStatus === "out-of-range" ||
+    options.levelGridStatus === "invalid" ||
+    options.eventRisk.tradePermission === "blocked" ||
+    options.bufferSize < 120
+  ) {
+    return "no-trade";
+  }
+
+  let level: RecommendationLevel = "conditional-setup";
+  if (options.eventRisk.tradePermission === "watch-only") {
+    level = capRecommendation(level, "watch-only");
+  }
+  if (options.isBrokerPrimary && options.snapshot.futuresFlowStatus === "unknown") {
+    level = capRecommendation(level, "watch-only");
+  }
+  if (options.isBrokerPrimary && options.macroBias === "unknown") {
+    level = capRecommendation(level, "watch-only");
+  }
+  if (options.bufferSize < 240) {
+    level = capRecommendation(level, "watch-only");
+  }
+  if (coverage.m5CompleteRatio < 0.90 || coverage.m15CompleteRatio < 0.80) {
+    level = capRecommendation(level, "watch-only");
+  }
+
+  const conditionalReady =
+    options.eventRisk.tradePermission === "allowed" &&
+    spreadValid &&
+    realCTrader &&
+    coverage.m5CompleteRatio >= 0.95 &&
+    coverage.m15CompleteRatio >= 0.90 &&
+    options.bufferSize >= 240 &&
+    options.confidence >= 55 &&
+    Math.abs(options.tfConfluence) >= 0.5 &&
+    options.levelGridStatus === "valid";
+
+  return conditionalReady ? level : capRecommendation(level, "watch-only");
 }
 
 // ---------------------------------------------------------------------------
@@ -920,7 +1018,16 @@ export function analyzeGold(
     hurstVal, vrVal, levelProximityScore, regime, volRegime
   );
   let confidence = rawConfidence;
+  // Confidence caps are semantic guardrails, not model calibration:
+  // broker-primary max 75; insufficient sample / poor completeness max 40;
+  // futures+macro unknown max 35; out-of-range levels max 25; test feed max 10.
   if (isBrokerPrimary) confidence = Math.min(confidence, 75);
+  const poorCompleteness =
+    snapshot.barCoverage.m5CompleteRatio < 0.90 ||
+    snapshot.barCoverage.m15CompleteRatio < 0.80;
+  const insufficientSample = snapshot.bars.m1.length < 240;
+  if (insufficientSample) confidence = Math.min(confidence, 40);
+  if (poorCompleteness) confidence = Math.min(confidence, 40);
 
   // ── Pattern Detection (Head & Shoulders) ──
   const patternResult = prices.length >= 30
@@ -953,8 +1060,20 @@ export function analyzeGold(
     eventRisk = { ...eventRisk, tradePermission: "blocked" };
   }
 
+  const recommendationLevel = computeRecommendationLevel({
+    snapshot,
+    eventRisk,
+    confidence,
+    tfConfluence,
+    bufferSize: snapshot.bars.m1.length,
+    levelGridStatus: levelGrid.status,
+    testFeed,
+    isBrokerPrimary,
+    macroBias: macroDrivers.macroBias
+  });
+
   let signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal, levelGridUsable);
-  if (eventRisk.tradePermission !== "allowed") {
+  if (eventRisk.tradePermission !== "allowed" || recommendationLevel !== "conditional-setup") {
     signal = forceFlatSignal(signal, price);
   }
 
@@ -1021,6 +1140,7 @@ export function analyzeGold(
     rrShort,
 
     confidence,
+    recommendationLevel,
 
     resistanceLevels: resistances.map(r => r.price),
     supportLevels: supports.map(s => s.price),

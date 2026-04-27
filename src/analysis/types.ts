@@ -19,6 +19,7 @@ export type TrendDirection = "bullish" | "bearish" | "neutral";
 export type MomentumState = "accelerating" | "steady" | "decaying";
 export type VolatilityRegime = "low" | "normal" | "high" | "extreme";
 export type LevelGridStatus = "valid" | "stale" | "out-of-range" | "invalid";
+export type RecommendationLevel = "no-trade" | "watch-only" | "conditional-setup" | "actionable";
 
 // ---------------------------------------------------------------------------
 // Multi-Timeframe Summary
@@ -118,6 +119,8 @@ export interface GoldAnalysis {
 
   // --- Confidence ---
   confidence: number;        // evidenceConfidence 0–100, not win rate
+
+  recommendationLevel: RecommendationLevel; // actionable is reserved and not emitted in this monitoring version
 
   // --- Level Grid Summary ---
   resistanceLevels: number[];

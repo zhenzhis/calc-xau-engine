@@ -128,6 +128,21 @@ With `DATA_PRIMARY=broker`, the Discord payload should show `BROKER PRIMARY` and
 
 Free or low-cost routes do not provide confirmed COMEX real-time tick, DOM, volume, or open-interest flow. Those fields remain unavailable unless a confirmed futures feed is added.
 
+## Recommendation Gates
+
+Broker-primary mode is a monitoring route, not a confirmed futures-flow trading route. The main analysis emits `recommendationLevel` as `no-trade`, `watch-only`, or `conditional-setup`; the reserved `actionable` level is not emitted in this version.
+
+Confidence is capped by data quality gates:
+
+- test feed: max 10
+- out-of-range manual level grid: max 25
+- broker-primary with both unknown futures flow and unknown macro bias: max 35
+- broker-primary generally: max 75
+- insufficient 1m sample: max 40
+- poor 5m/15m completeness: max 40
+
+Discord output treats watch-only/no-trade states as reference monitoring only and does not display execution-style entry, stop, or target instructions.
+
 ## Synthetic Test Data
 
 For local Discord or dry-run tests, generate an explicitly marked synthetic Pepperstone JSONL file:
