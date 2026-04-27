@@ -26,6 +26,7 @@ TRADOVATE_CID=
 TRADOVATE_SEC=
 TRADOVATE_GC_CONTRACT=GCM6
 TRADOVATE_MAX_RECONNECT_MS=60000
+TRADOVATE_ONCE_TIMEOUT_MS=30000
 RITHMIC_GC_JSONL_PATH=/quant/calc/data/xau-state-discord/rithmic-gc.jsonl
 ```
 
@@ -52,3 +53,14 @@ Set `TRADOVATE_GC_CONTRACT` to the active GC futures contract, for example `GCM6
 If only `Trade.price` is present, the sidecar can write a last-only row. The main system will score quality accordingly.
 
 The sidecar does not call order, liquidation, position, or account trading endpoints.
+
+## Start
+
+```bash
+npm run sidecar:tradovate
+npm run sidecar:tradovate -- --once
+```
+
+`--once` is a credential smoke test mode. It authenticates, authorizes the market data WebSocket, subscribes, writes the first valid bid/ask or last row, closes the socket, and exits. If no valid quote arrives before `TRADOVATE_ONCE_TIMEOUT_MS`, it exits non-zero.
+
+Node.js `>=20` is supported. On Node 22+ the native WebSocket is used when present; on Node 20 the sidecar falls back to the `ws` package.

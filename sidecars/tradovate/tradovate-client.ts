@@ -1,4 +1,5 @@
 import { safeJson } from "../common/redaction.js";
+import WsWebSocket from "ws";
 
 export interface TradovateClientConfig {
   envName: "demo" | "live";
@@ -35,6 +36,17 @@ type WebSocketLike = {
   close(): void;
 };
 type WebSocketConstructor = new (url: string) => WebSocketLike;
+type QuoteHandler = (quote: TradovateQuote) => void | boolean | Promise<void | boolean>;
+
+export interface TradovateQuoteSessionOptions {
+  once?: boolean;
+  onceTimeoutMs?: number;
+}
+
+export interface WebSocketFactoryOptions {
+  nativeWebSocket?: WebSocketConstructor;
+  fallbackWebSocket?: WebSocketConstructor;
+}
 
 const AUTH_REQUEST_ID = 1;
 const SUBSCRIBE_QUOTE_REQUEST_ID = 2;
@@ -46,15 +58,19 @@ export class TradovateClient {
 
   constructor(private readonly config: TradovateClientConfig) {}
 
-  async runQuoteSession(onQuote: (quote: TradovateQuote) => void): Promise<void> {
+  async runQuoteSession(onQuote: QuoteHandler, options: TradovateQuoteSessionOptions = {}): Promise<void> {
     const token = await this.ensureToken();
     const authToken = token.mdAccessToken || token.accessToken;
     const ws = createWebSocket(this.config.mdWsUrl);
     const latest: Omit<TradovateQuote, "timestampMs"> = {};
     const reconnectBeforeExpiryMs = Math.max(1_000, token.expirationMs - Date.now() - TOKEN_RENEW_LEAD_MS);
 
-    await new Promise<void>((_resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       let settled = false;
+      const onceTimeout = options.once
+        ? setTimeout(() => fail(new Error(`No valid Tradovate quote within ${options.onceTimeoutMs ?? 30_000}ms`)), options.onceTimeoutMs ?? 30_000)
+        : null;
+      onceTimeout?.unref();
       const expiryTimer = setTimeout(() => {
         try {
           ws.close();
@@ -69,6 +85,9 @@ export class TradovateClient {
           return;
         }
         settled = true;
+        if (onceTimeout) {
+          clearTimeout(onceTimeout);
+        }
         clearTimeout(expiryTimer);
         try {
           ws.close();
@@ -77,13 +96,28 @@ export class TradovateClient {
         }
         reject(error);
       };
+      const succeed = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (onceTimeout) {
+          clearTimeout(onceTimeout);
+        }
+        clearTimeout(expiryTimer);
+        ws.close();
+        resolve();
+      };
 
       ws.addEventListener("message", (event) => {
-        try {
-          this.handleFrame(String(event.data ?? ""), ws, authToken, latest, onQuote);
-        } catch (error) {
-          fail(error instanceof Error ? error : new Error(String(error)));
-        }
+        void this
+          .handleFrame(String(event.data ?? ""), ws, authToken, latest, onQuote, options)
+          .then((shouldResolve) => {
+            if (shouldResolve) {
+              succeed();
+            }
+          })
+          .catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
       });
       ws.addEventListener("error", (event) => {
         fail(new Error(`Tradovate websocket error: ${String(event.message ?? "unknown error")}`));
@@ -130,24 +164,25 @@ export class TradovateClient {
     return tokenFromResponse(response);
   }
 
-  private handleFrame(
+  private async handleFrame(
     frame: string,
     ws: WebSocketLike,
     authToken: string,
     latest: Omit<TradovateQuote, "timestampMs">,
-    onQuote: (quote: TradovateQuote) => void,
-  ): void {
+    onQuote: QuoteHandler,
+    options: TradovateQuoteSessionOptions,
+  ): Promise<boolean> {
     if (frame === "o") {
       sendWsRequest(ws, "authorize", AUTH_REQUEST_ID, authToken);
-      return;
+      return false;
     }
     if (frame === "h") {
       ws.send("");
-      return;
+      return false;
     }
     if (!frame.startsWith("a")) {
       console.warn(safeJson({ event: "tradovate_unhandled_frame", frame: frame.slice(0, 120) }));
-      return;
+      return false;
     }
 
     const messages = JSON.parse(frame.slice(1)) as unknown[];
@@ -162,9 +197,13 @@ export class TradovateClient {
         continue;
       }
       for (const quote of extractQuotes(record, latest)) {
-        onQuote(quote);
+        const accepted = await onQuote(quote);
+        if (options.once && accepted === true) {
+          return true;
+        }
       }
     }
+    return false;
   }
 
   private async fetchJson(url: string, init: RequestInit): Promise<Record<string, unknown>> {
@@ -255,12 +294,19 @@ function sendWsRequest(ws: WebSocketLike, endpoint: string, requestId: number, b
   ws.send(`${endpoint}\n${requestId}\n\n${payload}`);
 }
 
-function createWebSocket(url: string): WebSocketLike {
-  const ctor = (globalThis as unknown as { WebSocket?: WebSocketConstructor }).WebSocket;
-  if (!ctor) {
-    throw new Error("Global WebSocket is unavailable; run sidecar with Node.js 22+");
+export function createWebSocket(url: string, options: WebSocketFactoryOptions = {}): WebSocketLike {
+  const nativeCtor = Object.hasOwn(options, "nativeWebSocket")
+    ? options.nativeWebSocket
+    : (globalThis as unknown as { WebSocket?: WebSocketConstructor }).WebSocket;
+  if (nativeCtor) {
+    return new nativeCtor(url);
   }
-  return new ctor(url);
+
+  const fallbackCtor = options.fallbackWebSocket ?? (WsWebSocket as unknown as WebSocketConstructor | undefined);
+  if (!fallbackCtor) {
+    throw new Error("WebSocket is unavailable; install ws or run with Node.js native WebSocket support");
+  }
+  return new fallbackCtor(url);
 }
 
 function isResponseTo(record: Record<string, unknown>, requestId: number): boolean {

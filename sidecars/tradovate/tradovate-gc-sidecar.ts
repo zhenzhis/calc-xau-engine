@@ -7,6 +7,7 @@ import { TradovateClient, type TradovateClientConfig, type TradovateQuote } from
 interface SidecarConfig extends TradovateClientConfig {
   outputPath: string;
   maxReconnectMs: number;
+  onceTimeoutMs: number;
 }
 
 interface SidecarState {
@@ -22,6 +23,7 @@ const DEFAULT_MD_WS_URL = "wss://md.tradovateapi.com/v1/websocket";
 
 async function main(): Promise<void> {
   const config = readConfig();
+  const once = process.argv.includes("--once");
   const state: SidecarState = {
     lastWriteMs: null,
     lastQuote: null,
@@ -48,10 +50,19 @@ async function main(): Promise<void> {
       mdWsUrl: config.mdWsUrl,
       contract: config.contract,
       outputPath: config.outputPath,
+      once,
     }),
   );
 
   const client = new TradovateClient(config);
+  if (once) {
+    await client.runQuoteSession((quote) => writeQuote(config, state, quote), {
+      once: true,
+      onceTimeoutMs: config.onceTimeoutMs,
+    });
+    return;
+  }
+
   let reconnectDelayMs = 1_000;
   while (true) {
     try {
@@ -72,7 +83,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function writeQuote(config: SidecarConfig, state: SidecarState, quote: TradovateQuote): Promise<void> {
+async function writeQuote(config: SidecarConfig, state: SidecarState, quote: TradovateQuote): Promise<boolean> {
   const row: Record<string, unknown> = {
     timestampMs: quote.timestampMs,
     symbol: "GC",
@@ -89,7 +100,7 @@ async function writeQuote(config: SidecarConfig, state: SidecarState, quote: Tra
     row.volume = quote.volume;
   }
   if (row.bid === undefined && row.last === undefined) {
-    return;
+    return false;
   }
 
   await appendJsonl(config.outputPath, row);
@@ -97,6 +108,7 @@ async function writeQuote(config: SidecarConfig, state: SidecarState, quote: Tra
   state.lastQuote = { bid: quote.bid, ask: quote.ask, last: quote.last, volume: quote.volume };
   state.lastError = null;
   state.writeCount += 1;
+  return true;
 }
 
 function readConfig(): SidecarConfig {
@@ -116,6 +128,7 @@ function readConfig(): SidecarConfig {
     contract: optionalEnv("TRADOVATE_GC_CONTRACT", "GCM6")!,
     outputPath: optionalEnv("RITHMIC_GC_JSONL_PATH", DEFAULT_OUTPUT_PATH)!,
     maxReconnectMs: Math.trunc(parseNumberEnv("TRADOVATE_MAX_RECONNECT_MS", 60_000, { min: 1_000 })),
+    onceTimeoutMs: Math.trunc(parseNumberEnv("TRADOVATE_ONCE_TIMEOUT_MS", 30_000, { min: 1_000 })),
   };
 }
 

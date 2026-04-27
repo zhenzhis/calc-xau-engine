@@ -55,6 +55,7 @@ export class CTraderFixClient extends EventEmitter {
   private latestAsk: number | undefined;
   private latestBidSize: number | undefined;
   private latestAskSize: number | undefined;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly config: FixSessionConfig) {
     super();
@@ -110,14 +111,21 @@ export class CTraderFixClient extends EventEmitter {
   }
 
   close(): void {
+    this.stopActiveHeartbeat();
     this.socket?.destroy();
     this.socket = null;
   }
 
   private attachSocketHandlers(socket: SocketLike): void {
     socket.on("data", (chunk) => this.handleData(chunk.toString("utf8")));
-    socket.on("close", () => this.emit("close"));
-    socket.on("error", (error) => this.emit("error", error));
+    socket.on("close", () => {
+      this.stopActiveHeartbeat();
+      this.emit("close");
+    });
+    socket.on("error", (error) => {
+      this.stopActiveHeartbeat();
+      this.emit("error", error);
+    });
   }
 
   private handleData(chunk: string): void {
@@ -153,6 +161,7 @@ export class CTraderFixClient extends EventEmitter {
       return;
     }
     if (msgType === "A") {
+      this.startActiveHeartbeat();
       this.emit("logon", message);
       return;
     }
@@ -164,6 +173,7 @@ export class CTraderFixClient extends EventEmitter {
       console.error(safeJson({ event: "ctrader_fix_error", msgType, text: message.get("58"), raw: toLoggableFix(rawWithoutChecksum(message.raw)) }));
       this.emit("reject", message);
       if (msgType === "5") {
+        this.stopActiveHeartbeat();
         this.close();
       }
       return;
@@ -204,6 +214,28 @@ export class CTraderFixClient extends EventEmitter {
     this.msgSeqNum += 1;
     this.socket.write(message, "utf8");
   }
+
+  private startActiveHeartbeat(): void {
+    if (this.config.heartbeatSec <= 0 || this.heartbeatTimer) {
+      return;
+    }
+    this.heartbeatTimer = setInterval(() => {
+      try {
+        this.sendHeartbeat();
+      } catch (error) {
+        this.emit("error", error);
+      }
+    }, this.config.heartbeatSec * 1_000);
+    this.heartbeatTimer.unref();
+  }
+
+  private stopActiveHeartbeat(): void {
+    if (!this.heartbeatTimer) {
+      return;
+    }
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
 }
 
 export function buildSessionMessage(
@@ -217,14 +249,18 @@ export function buildSessionMessage(
   }
   return buildFixMessage([
     ["35", msgType],
-    ["49", config.senderCompId],
-    ["56", config.targetCompId],
     ["34", msgSeqNum],
-    ["52", formatUtcTimestamp(new Date())],
+    ["49", config.senderCompId],
     ["50", config.senderSubId],
+    ["52", formatUtcTimestamp(new Date())],
+    ["56", config.targetCompId],
     ["57", config.targetSubId],
     ...bodyFields,
   ]);
+}
+
+export function buildHeartbeatMessage(config: FixSessionConfig, msgSeqNum: number, testReqId?: string): string {
+  return buildSessionMessage(config, msgSeqNum, "0", testReqId ? [["112", testReqId]] : []);
 }
 
 export function buildFixMessage(fields: FixField[]): string {

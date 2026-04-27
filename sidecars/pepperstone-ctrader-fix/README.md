@@ -35,6 +35,7 @@ CTRADER_FIX_TARGET_SUB_ID=QUOTE
 CTRADER_FIX_HEARTBEAT_SEC=30
 CTRADER_FIX_RESET_SEQ_NUM=true
 CTRADER_FIX_SYMBOL_ID_XAUUSD=
+CTRADER_FIX_ONCE_TIMEOUT_MS=30000
 PEPPERSTONE_XAU_JSONL_PATH=/quant/calc/data/xau-state-discord/pepperstone-xau.jsonl
 PEPPERSTONE_MAX_SPREAD=5
 ```
@@ -43,7 +44,10 @@ PEPPERSTONE_MAX_SPREAD=5
 
 ```bash
 npm run sidecar:pepperstone
+npm run sidecar:pepperstone -- --once
 ```
+
+`--once` is a credential smoke test mode. It connects, logs on, subscribes, writes the first valid bid/ask row, sends Logout, and exits. If no valid quote arrives before `CTRADER_FIX_ONCE_TIMEOUT_MS`, it exits non-zero.
 
 ## Common Errors
 

@@ -67,6 +67,15 @@ npm run sidecar:pepperstone
 npm run sidecar:tradovate
 ```
 
+One-shot credential smoke tests:
+
+```bash
+npm run sidecar:pepperstone -- --once
+npm run sidecar:tradovate -- --once
+```
+
+`--once` connects, authenticates, subscribes, writes the first valid quote row, then exits. It fails with a non-zero exit code if no valid quote arrives before `CTRADER_FIX_ONCE_TIMEOUT_MS` or `TRADOVATE_ONCE_TIMEOUT_MS`.
+
 Run each sidecar under a process manager such as systemd. They log JSON events and emit a heartbeat every 30 seconds.
 
 Production systemd can load `/quant/calc/config/xau-sidecars.env` directly. Do not hardcode credentials in package scripts.
@@ -119,3 +128,7 @@ The main system uses `MAX_TICK_AGE_MS` and source health scoring to mark stale f
 ## JSONL Rotation
 
 Set `JSONL_MAX_BYTES` to rotate active JSONL files. Rotation moves the current file into an `archive/` directory beside the active file. Rotation failures are surfaced by the sidecar main loop instead of being silently ignored.
+
+## Node Runtime
+
+The package requires Node.js `>=20`. Tradovate uses native `globalThis.WebSocket` on Node 22+ and falls back to the `ws` package on Node 20.

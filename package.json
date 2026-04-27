@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Quantitative XAUUSD analysis Discord broadcaster with static level grid and multi-factor scoring.",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.sidecars.json",
     "start": "npm run build && node --env-file-if-exists=.env dist/main.js",
@@ -13,13 +16,15 @@
     "sidecar:pepperstone": "npm run build && node --env-file-if-exists=.env.sidecar dist/sidecars/pepperstone-ctrader-fix/pepperstone-xau-fix-sidecar.js",
     "sidecar:tradovate": "npm run build && node --env-file-if-exists=.env.sidecar dist/sidecars/tradovate/tradovate-gc-sidecar.js",
     "check:ingest": "npm run build && node --env-file-if-exists=.env.sidecar dist/scripts/check-data-ingest.js",
-    "test": "npm run build && node --test --test-isolation=none dist/runtime/market-hours.test.js dist/data/bar-builder.test.js dist/events/event-calendar.test.js dist/analysis/score-semantics.test.js dist/discord/source-health.test.js dist/sidecars/pepperstone-ctrader-fix/ctrader-fix-client.test.js dist/sidecars/common/jsonl-writer.test.js dist/sidecars/common/redaction.test.js dist/scripts/check-data-ingest.test.js"
+    "test": "npm run build && node --test --test-isolation=none dist/runtime/market-hours.test.js dist/data/bar-builder.test.js dist/events/event-calendar.test.js dist/analysis/score-semantics.test.js dist/discord/source-health.test.js dist/sidecars/pepperstone-ctrader-fix/ctrader-fix-client.test.js dist/sidecars/tradovate/tradovate-client.test.js dist/sidecars/common/jsonl-writer.test.js dist/sidecars/common/redaction.test.js dist/scripts/check-data-ingest.test.js"
   },
   "dependencies": {
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.9.3"
   }
 }

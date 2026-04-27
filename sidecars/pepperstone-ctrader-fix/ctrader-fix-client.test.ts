@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   SOH,
   buildFixMessage,
+  buildHeartbeatMessage,
   buildSessionMessage,
   calculateCheckSum,
   extractBidAsk,
@@ -54,7 +55,9 @@ test("Logon message includes required cTrader FIX tags", () => {
     ["554", config.password],
   ]);
   const parsed = parseFixMessage(message);
+  const tags = parsed.fields.map(([tag]) => tag).slice(0, 9);
 
+  assert.deepEqual(tags, ["8", "9", "35", "34", "49", "50", "52", "56", "57"]);
   assert.equal(parsed.get("35"), "A");
   assert.equal(parsed.get("49"), config.senderCompId);
   assert.equal(parsed.get("56"), "CSERVER");
@@ -80,13 +83,24 @@ test("MarketDataRequest contains snapshot plus updates bid/ask subscription", ()
     ["55", "99"],
   ]);
   const parsed = parseFixMessage(message);
+  const tags = parsed.fields.map(([tag]) => tag).slice(0, 9);
 
+  assert.deepEqual(tags, ["8", "9", "35", "34", "49", "50", "52", "56", "57"]);
   assert.equal(parsed.get("35"), "V");
   assert.equal(parsed.get("263"), "1");
   assert.equal(parsed.get("264"), "1");
   assert.equal(parsed.get("267"), "2");
   assert.deepEqual(parsed.getAll("269"), ["0", "1"]);
   assert.equal(parsed.get("55"), "99");
+});
+
+test("Active heartbeat message construction uses MsgType 35=0", () => {
+  const message = buildHeartbeatMessage(config, 3);
+  const parsed = parseFixMessage(message);
+
+  assert.deepEqual(parsed.fields.map(([tag]) => tag).slice(0, 9), ["8", "9", "35", "34", "49", "50", "52", "56", "57"]);
+  assert.equal(parsed.get("35"), "0");
+  assert.equal(parsed.get("34"), "3");
 });
 
 test("FIX parser extracts bid and ask from 35=W snapshot", () => {

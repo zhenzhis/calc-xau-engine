@@ -9,6 +9,7 @@ interface PepperstoneFixConfig extends FixSessionConfig {
   outputPath: string;
   maxSpread: number;
   maxReconnectMs: number;
+  onceTimeoutMs: number;
 }
 
 interface SidecarState {
@@ -23,6 +24,7 @@ const DEFAULT_OUTPUT_PATH = "/quant/calc/data/xau-state-discord/pepperstone-xau.
 
 async function main(): Promise<void> {
   const config = readConfig();
+  const once = process.argv.includes("--once");
   const state: SidecarState = {
     lastWriteMs: null,
     lastQuote: null,
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
       senderSubId: config.senderSubId,
       targetSubId: config.targetSubId,
       outputPath: config.outputPath,
+      once,
     }),
   );
 
@@ -65,10 +68,16 @@ async function main(): Promise<void> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
+  if (once) {
+    currentClient = new CTraderFixClient(config);
+    await runSession(currentClient, config, state, { once: true });
+    return;
+  }
+
   while (!stopping) {
     try {
       currentClient = new CTraderFixClient(config);
-      await runSession(currentClient, config, state);
+      await runSession(currentClient, config, state, { once: false });
       reconnectDelayMs = 1_000;
     } catch (error) {
       if (stopping) {
@@ -84,13 +93,20 @@ async function main(): Promise<void> {
   }
 }
 
-async function runSession(client: CTraderFixClient, config: PepperstoneFixConfig, state: SidecarState): Promise<void> {
-  client.on("quote", (quote: CTraderQuote) => {
-    void writeQuote(config, state, quote).catch((error) => {
-      state.lastError = error instanceof Error ? error.message : String(error);
-      console.error(safeJson({ event: "pepperstone_fix_write_failed", error: state.lastError }));
+async function runSession(
+  client: CTraderFixClient,
+  config: PepperstoneFixConfig,
+  state: SidecarState,
+  options: { once: boolean },
+): Promise<void> {
+  if (!options.once) {
+    client.on("quote", (quote: CTraderQuote) => {
+      void writeQuote(config, state, quote).catch((error) => {
+        state.lastError = error instanceof Error ? error.message : String(error);
+        console.error(safeJson({ event: "pepperstone_fix_write_failed", error: state.lastError }));
+      });
     });
-  });
+  }
   client.on("reject", (message) => {
     console.error(safeJson({ event: "pepperstone_fix_reject", msgType: message.get("35"), text: message.get("58") }));
   });
@@ -104,15 +120,66 @@ async function runSession(client: CTraderFixClient, config: PepperstoneFixConfig
   client.logon();
   await logonAck;
   client.subscribeMarketData(config.symbolId);
+
+  if (options.once) {
+    await waitForFirstValidQuote(client, config, state);
+    client.logout("once complete");
+    return;
+  }
+
   await new Promise<void>((_resolve, reject) => {
     client.once("close", () => reject(new Error("cTrader FIX socket closed")));
     client.once("error", reject);
   });
 }
 
-async function writeQuote(config: PepperstoneFixConfig, state: SidecarState, quote: CTraderQuote): Promise<void> {
+async function waitForFirstValidQuote(
+  client: CTraderFixClient,
+  config: PepperstoneFixConfig,
+  state: SidecarState,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`No valid cTrader quote within ${config.onceTimeoutMs}ms`)), config.onceTimeoutMs);
+    timeout.unref();
+
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      client.off("quote", onQuote);
+      client.off("close", onClose);
+      client.off("error", onError);
+    };
+    const onQuote = (quote: CTraderQuote): void => {
+      void writeQuote(config, state, quote)
+        .then((written) => {
+          if (!written) {
+            return;
+          }
+          cleanup();
+          resolve();
+        })
+        .catch((error) => {
+          cleanup();
+          reject(error);
+        });
+    };
+    const onClose = (): void => {
+      cleanup();
+      reject(new Error("cTrader FIX socket closed before first quote"));
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+
+    client.on("quote", onQuote);
+    client.once("close", onClose);
+    client.once("error", onError);
+  });
+}
+
+async function writeQuote(config: PepperstoneFixConfig, state: SidecarState, quote: CTraderQuote): Promise<boolean> {
   if (quote.bid === undefined || quote.ask === undefined) {
-    return;
+    return false;
   }
   if (!Number.isFinite(quote.bid) || !Number.isFinite(quote.ask) || quote.ask <= quote.bid) {
     throw new Error(`invalid cTrader quote bid=${quote.bid} ask=${quote.ask}`);
@@ -131,6 +198,7 @@ async function writeQuote(config: PepperstoneFixConfig, state: SidecarState, quo
   state.lastQuote = { bid: quote.bid, ask: quote.ask, spread };
   state.lastError = null;
   state.writeCount += 1;
+  return true;
 }
 
 function readConfig(): PepperstoneFixConfig {
@@ -150,6 +218,7 @@ function readConfig(): PepperstoneFixConfig {
     outputPath: optionalEnv("PEPPERSTONE_XAU_JSONL_PATH", DEFAULT_OUTPUT_PATH)!,
     maxSpread: parseNumberEnv("PEPPERSTONE_MAX_SPREAD", 5, { min: 0 }),
     maxReconnectMs: Math.trunc(parseNumberEnv("CTRADER_FIX_MAX_RECONNECT_MS", 60_000, { min: 1_000 })),
+    onceTimeoutMs: Math.trunc(parseNumberEnv("CTRADER_FIX_ONCE_TIMEOUT_MS", 30_000, { min: 1_000 })),
   };
 }
 
