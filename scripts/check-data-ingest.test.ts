@@ -69,3 +69,32 @@ test("broker-primary strict accepts fresh Pepperstone with missing futures", asy
   assert.equal(report.messages.includes("futures unavailable; broker-primary mode active"), true);
   assert.equal(strictIngestOk(report), true);
 });
+
+test("broker-primary strict rejects synthetic Pepperstone feed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xau-ingest-"));
+  const pepperstonePath = join(dir, "pepperstone.jsonl");
+  await writeFile(pepperstonePath, `${JSON.stringify({
+    timestampMs: 1_000,
+    symbol: "XAUUSD",
+    bid: 2349.82,
+    ask: 2350.05,
+    feed: "synthetic_test",
+    sidecar: "test-generator",
+    sessionVerified: false,
+    testData: true
+  })}\n`);
+
+  const report = await buildIngestReport({
+    pepperstonePath,
+    futuresPath: join(dir, "missing-futures.jsonl"),
+    nowMs: 1_100,
+    maxAgeMs: 500,
+    mode: "broker",
+    selectedBrokerSource: "pepperstone"
+  });
+
+  assert.equal(report.pepperstone_ok, false);
+  assert.equal(report.broker_primary_ok, false);
+  assert.equal(report.messages.includes("pepperstone synthetic/test feed; not valid for production ingest"), true);
+  assert.equal(strictIngestOk(report), false);
+});

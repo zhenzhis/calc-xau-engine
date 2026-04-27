@@ -9,6 +9,10 @@ interface PepperstoneJsonlRow {
   symbol?: unknown;
   bid?: unknown;
   ask?: unknown;
+  feed?: unknown;
+  sidecar?: unknown;
+  sessionVerified?: unknown;
+  testData?: unknown;
 }
 
 function initialHealth(): SourceHealth {
@@ -26,6 +30,14 @@ function initialHealth(): SourceHealth {
 
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function isSyntheticTestFeed(row: PepperstoneJsonlRow): boolean {
+  return row.testData === true || row.feed === "synthetic_test";
 }
 
 function parseLine(line: string): PepperstoneJsonlRow | null {
@@ -84,6 +96,8 @@ export class PepperstoneFileProvider implements DataProvider {
       for (const line of lines) {
         const row = parseLine(line);
         if (!row || !finite(row.timestampMs) || !finite(row.bid) || !finite(row.ask)) continue;
+        const testData = isSyntheticTestFeed(row);
+        const qualityScore = testData ? 20 : 95;
         ticks.push({
           symbol: typeof row.symbol === "string" ? row.symbol : "XAUUSD",
           source: "pepperstone",
@@ -92,6 +106,11 @@ export class PepperstoneFileProvider implements DataProvider {
           bid: row.bid,
           ask: row.ask,
           mid: (row.bid + row.ask) / 2,
+          qualityScore,
+          feed: optionalString(row.feed),
+          sidecar: optionalString(row.sidecar),
+          sessionVerified: typeof row.sessionVerified === "boolean" ? row.sessionVerified : undefined,
+          testData,
           raw: row
         });
       }
@@ -115,15 +134,27 @@ export class PepperstoneFileProvider implements DataProvider {
       const stale = ageMs > this.config.maxTickAgeMs;
       const spread = last.ask !== undefined && last.bid !== undefined ? last.ask - last.bid : 0;
       const spreadPenalty = spread > 1 ? 20 : 0;
+      const isTest = last.testData === true || last.feed === "synthetic_test";
+      const productionQuality = Math.max(60, 95 - spreadPenalty);
+      const qualityScore = stale ? Math.min(isTest ? 20 : productionQuality, 40) : isTest ? 20 : productionQuality;
       this.health = {
         source: "pepperstone",
-        ok: !stale,
+        ok: !stale && !isTest,
         lastUpdateMs: last.timestampMs,
         ageMs,
         latencyMs: Date.now() - start,
         stale,
-        error: stale ? "latest Pepperstone tick is stale" : undefined,
-        qualityScore: stale ? 40 : Math.max(60, 95 - spreadPenalty)
+        error: stale
+          ? "latest Pepperstone tick is stale"
+          : isTest
+            ? "synthetic/test Pepperstone feed"
+            : undefined,
+        warning: isTest ? "synthetic/test feed; not production cTrader FIX" : undefined,
+        feed: last.feed,
+        sidecar: last.sidecar,
+        sessionVerified: last.sessionVerified,
+        testData: isTest,
+        qualityScore
       };
       return ticks;
     } catch (error) {

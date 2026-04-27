@@ -65,3 +65,32 @@ test("broker-primary selects fresh Pepperstone as active primary", async () => {
   assert.equal(snapshot.xauBrokerTick?.symbol, "XAUUSD");
   assert.ok(snapshot.bars.m1.length > 0);
 });
+
+test("broker-primary preserves synthetic Pepperstone provenance with degraded health", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xau-hub-"));
+  const pepperstonePath = join(dir, "pepperstone-xau.jsonl");
+  const now = Date.now();
+  const lines = Array.from({ length: 20 }, (_, i) => {
+    const bid = 2349.8 + i * 0.05;
+    return JSON.stringify({
+      timestampMs: now - (19 - i) * 60_000 - 1_000,
+      symbol: "XAUUSD",
+      bid,
+      ask: bid + 0.2,
+      feed: "synthetic_test",
+      sidecar: "test-generator",
+      sessionVerified: false,
+      testData: true
+    });
+  }).join("\n");
+  await writeFile(pepperstonePath, `${lines}\n`, "utf8");
+
+  const hub = new MarketDataHub(config(pepperstonePath), new Logger("error"));
+  const snapshot = await hub.fetchSnapshot();
+
+  assert.equal(snapshot.primary.source, "pepperstone");
+  assert.equal(snapshot.activePrimaryHealth.feed, "synthetic_test");
+  assert.equal(snapshot.activePrimaryHealth.testData, true);
+  assert.ok(snapshot.activePrimaryHealth.qualityScore <= 20);
+  assert.equal(snapshot.xauBrokerTick?.testData, true);
+});

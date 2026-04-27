@@ -77,7 +77,7 @@ export function buildCandlesFromTicks(
       tickCount: group.length,
       vwap: weighted,
       complete: startMs + timeframeMs(timeframe) <= nowMs,
-      qualityScore: Math.min(...group.map(() => 100)),
+      qualityScore: Math.min(...group.map((tick) => tick.qualityScore ?? 100)),
       completenessRatio: 1
     });
   }

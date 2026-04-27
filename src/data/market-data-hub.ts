@@ -206,9 +206,12 @@ export class MarketDataHub {
     yahoo: ProviderResult,
     broker: ProviderResult
   ): ProviderResult & { kind: PrimaryKind } {
-    const brokerUsable =
-      broker.health.qualityScore >= this.config.minSourceQuality &&
+    const brokerHasFreshRows =
+      !broker.health.stale &&
       (broker.tick !== null || broker.candles.length > 0);
+    const brokerUsable =
+      brokerHasFreshRows &&
+      (broker.health.qualityScore >= this.config.minSourceQuality || broker.health.testData === true);
     const yahooUsable =
       this.config.enableYahooFallback &&
       (yahoo.tick !== null || yahoo.candles.length > 0);

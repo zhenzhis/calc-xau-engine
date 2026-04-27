@@ -128,6 +128,16 @@ With `DATA_PRIMARY=broker`, the Discord payload should show `BROKER PRIMARY` and
 
 Free or low-cost routes do not provide confirmed COMEX real-time tick, DOM, volume, or open-interest flow. Those fields remain unavailable unless a confirmed futures feed is added.
 
+## Synthetic Test Data
+
+For local Discord or dry-run tests, generate an explicitly marked synthetic Pepperstone JSONL file:
+
+```bash
+npm run generate:test-pepperstone
+```
+
+Rows produced by this helper include `feed=synthetic_test`, `sidecar=test-generator`, `sessionVerified=false`, and `testData=true`. The main analysis caps this feed to low quality and blocks trade permission. Synthetic data is only for pipeline testing and must not be used for trading decisions.
+
 ## Stale Data Handling
 
 The main system uses `MAX_TICK_AGE_MS` and source health scoring to mark stale feeds. If `check:ingest` reports stale ages:

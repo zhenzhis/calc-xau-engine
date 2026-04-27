@@ -12,6 +12,8 @@ interface PepperstoneRow {
   timestampMs?: unknown;
   bid?: unknown;
   ask?: unknown;
+  feed?: unknown;
+  testData?: unknown;
 }
 
 export interface IngestReport {
@@ -55,6 +57,7 @@ export async function buildIngestReport(options: IngestReportOptions): Promise<I
   const pepperstoneAgeMs = ageMs(pepperstone?.timestampMs, nowMs);
   const futuresLast = latestFuturesPrice(futures);
   const pepperstoneSpread = spread(pepperstone);
+  const pepperstoneSynthetic = isSyntheticPepperstone(pepperstone);
 
   if (futuresAgeMs === null) {
     messages.push("futures timestamp missing or invalid");
@@ -72,8 +75,15 @@ export async function buildIngestReport(options: IngestReportOptions): Promise<I
   if (pepperstoneSpread === null) {
     messages.push("pepperstone bid/ask/spread missing or invalid");
   }
+  if (pepperstoneSynthetic) {
+    messages.push("pepperstone synthetic/test feed; not valid for production ingest");
+  }
 
-  const pepperstoneOk = pepperstoneAgeMs !== null && pepperstoneAgeMs <= maxAgeMs && pepperstoneSpread !== null;
+  const pepperstoneOk =
+    pepperstoneAgeMs !== null &&
+    pepperstoneAgeMs <= maxAgeMs &&
+    pepperstoneSpread !== null &&
+    !pepperstoneSynthetic;
   const futuresOk = futuresAgeMs !== null && futuresAgeMs <= maxAgeMs && futuresLast !== null;
   if (mode === "broker" && !futuresOk) {
     messages.push("futures unavailable; broker-primary mode active");
@@ -81,7 +91,7 @@ export async function buildIngestReport(options: IngestReportOptions): Promise<I
 
   return {
     mode,
-    pepperstone_ok: pepperstoneAgeMs !== null && pepperstoneAgeMs <= maxAgeMs && pepperstoneSpread !== null,
+    pepperstone_ok: pepperstoneOk,
     futures_ok: futuresOk,
     broker_primary_ok: mode === "broker" && selectedBrokerSource === "pepperstone" && pepperstoneOk,
     selected_broker_source: selectedBrokerSource,
@@ -171,6 +181,10 @@ function spread(row: PepperstoneRow | undefined): number | null {
     return null;
   }
   return ask - bid;
+}
+
+function isSyntheticPepperstone(row: PepperstoneRow | undefined): boolean {
+  return row?.testData === true || row?.feed === "synthetic_test";
 }
 
 function asFiniteNumber(value: unknown): number | null {

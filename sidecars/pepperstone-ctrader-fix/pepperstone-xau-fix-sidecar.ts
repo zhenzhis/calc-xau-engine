@@ -193,6 +193,10 @@ async function writeQuote(config: PepperstoneFixConfig, state: SidecarState, quo
     symbol: "XAUUSD",
     bid: quote.bid,
     ask: quote.ask,
+    feed: "ctrader_fix",
+    sidecar: "pepperstone-ctrader-fix",
+    sessionVerified: true,
+    testData: false,
   });
   state.lastWriteMs = Date.now();
   state.lastQuote = { bid: quote.bid, ask: quote.ask, spread };

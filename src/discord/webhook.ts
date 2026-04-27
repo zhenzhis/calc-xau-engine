@@ -58,7 +58,12 @@ function embedColor(a: GoldAnalysis): number {
 function sourceLabel(a: GoldAnalysis): string {
   const primary = a.data.snapshot.primary;
   const broker = a.data.snapshot.xauBrokerTick;
-  if (primary.instrumentKind === "broker_spot") return "Pepperstone cTrader FIX";
+  const health = a.data.snapshot.activePrimaryHealth;
+  if (primary.instrumentKind === "broker_spot") {
+    if (isTestData(a)) return "Synthetic test feed";
+    if (health.feed === "ctrader_fix" && health.sessionVerified === true) return "Pepperstone cTrader FIX";
+    return "Pepperstone JSONL (unverified)";
+  }
   if (primary.source === "rithmic" && broker) return "Rithmic+Pepperstone";
   if (primary.source === "rithmic") return "Rithmic";
   if (primary.source === "yahoo") return "Yahoo fallback";
@@ -69,8 +74,34 @@ function isBrokerPrimary(a: GoldAnalysis): boolean {
   return a.data.snapshot.primary.instrumentKind === "broker_spot";
 }
 
+function isTestData(a: GoldAnalysis): boolean {
+  return (
+    a.data.snapshot.activePrimaryHealth.testData === true ||
+    a.data.snapshot.activePrimaryHealth.feed === "synthetic_test" ||
+    a.data.snapshot.xauBrokerTick?.testData === true ||
+    a.data.snapshot.xauBrokerTick?.feed === "synthetic_test"
+  );
+}
+
+function levelGridUnavailable(a: GoldAnalysis): boolean {
+  return a.levelGridStatus === "out-of-range" || a.levelGridStatus === "invalid";
+}
+
+function brokerSpreadLabel(a: GoldAnalysis): string {
+  const tick = a.data.snapshot.xauBrokerTick;
+  if (tick?.bid !== undefined && tick.ask !== undefined && tick.ask > tick.bid) {
+    return fp(tick.ask - tick.bid);
+  }
+  return a.data.basis.brokerSpread !== undefined ? fp(a.data.basis.brokerSpread) : "unavailable";
+}
+
+function dailyChangeLabel(a: GoldAnalysis): string {
+  return a.data.snapshot.primary.dailyChangePct === undefined ? "n/a" : fPct(a.dailyChangePct);
+}
+
 function stateLabel(a: GoldAnalysis): "LONG-PULLBACK" | "SHORT-REJECTION" | "RANGE-WATCH" | "NO-TRADE" {
   if (a.eventRisk.tradePermission === "blocked") return "NO-TRADE";
+  if (levelGridUnavailable(a)) return "NO-TRADE";
   if (a.data.snapshot.activePrimaryHealth.qualityScore < 25) {
     return "NO-TRADE";
   }
@@ -81,6 +112,7 @@ function stateLabel(a: GoldAnalysis): "LONG-PULLBACK" | "SHORT-REJECTION" | "RAN
 
 function preferredAction(a: GoldAnalysis): string {
   if (a.eventRisk.tradePermission === "blocked") return "No trade";
+  if (levelGridUnavailable(a)) return "No trade";
   if (a.eventRisk.tradePermission === "watch-only") return "Watch only";
   const state = stateLabel(a);
   if (state === "LONG-PULLBACK") return "Long pullback watch";
@@ -90,8 +122,12 @@ function preferredAction(a: GoldAnalysis): string {
 }
 
 function sourceHealthText(a: GoldAnalysis): string {
-  const active = `active=${a.data.snapshot.activePrimaryHealth.source}:${a.data.snapshot.activePrimaryHealth.qualityScore}${a.data.snapshot.activePrimaryHealth.stale ? "/stale" : ""}`;
-  const broker = `broker=${a.data.snapshot.brokerHealth.source}:${a.data.snapshot.brokerHealth.qualityScore}${a.data.snapshot.brokerHealth.stale ? "/stale" : ""}`;
+  const activeHealth = a.data.snapshot.activePrimaryHealth;
+  const brokerHealth = a.data.snapshot.brokerHealth;
+  const activeFeed = activeHealth.feed ? `/${activeHealth.feed}` : "";
+  const brokerFeed = brokerHealth.feed ? `/${brokerHealth.feed}` : "";
+  const active = `active=${activeHealth.source}:${activeHealth.qualityScore}${activeHealth.stale ? "/stale" : ""}${activeHealth.testData ? "/test" : ""}${activeFeed}`;
+  const broker = `broker=${brokerHealth.source}:${brokerHealth.qualityScore}${brokerHealth.stale ? "/stale" : ""}${brokerHealth.testData ? "/test" : ""}${brokerFeed}`;
   const optional = a.data.snapshot.optionalSourceHealth
     .map((h) => `${h.source}:${h.qualityScore}${h.stale ? "/stale" : ""}`)
     .join(",");
@@ -154,6 +190,11 @@ function levelStatus(a: GoldAnalysis, price: number): string {
 }
 
 function keyLevels(a: GoldAnalysis): string {
+  if (levelGridUnavailable(a)) {
+    const distance = a.nearestLevelDistance !== null ? `nearest distance ${fp(a.nearestLevelDistance)}` : "no usable levels";
+    return `Level grid out of range (${distance}).`;
+  }
+
   const lines: string[] = ["```"];
   for (const price of a.resistanceLevels.slice(0, 3).reverse()) {
     lines.push(`R  ${price.toFixed(0).padStart(5)}  ${levelStatus(a, price)}`);
@@ -168,11 +209,13 @@ function keyLevels(a: GoldAnalysis): string {
 
 function setupField(a: GoldAnalysis): string {
   const brokerPrimary = isBrokerPrimary(a);
-  const setupValid = a.eventRisk.tradePermission === "allowed" && stateLabel(a) !== "NO-TRADE";
+  const gridUnavailable = levelGridUnavailable(a);
+  const setupValid = a.eventRisk.tradePermission === "allowed" && stateLabel(a) !== "NO-TRADE" && !gridUnavailable;
   const primaryOk = a.data.snapshot.activePrimaryHealth.qualityScore >= 60;
   const brokerOk = a.data.snapshot.xauBrokerTick !== null && a.data.snapshot.brokerHealth.qualityScore >= 60;
-  const invalidation =
-    a.trend === "bullish" ? a.nearestSupport?.price
+  const invalidation = gridUnavailable
+    ? undefined
+    : a.trend === "bullish" ? a.nearestSupport?.price
     : a.trend === "bearish" ? a.nearestResistance?.price
     : undefined;
   const futuresCondition =
@@ -187,12 +230,14 @@ function setupField(a: GoldAnalysis): string {
     brokerPrimary
       ? futuresCondition
       : (brokerOk ? "broker quote available" : "broker quote missing"),
+    isTestData(a) ? "test feed blocked" : null,
+    gridUnavailable ? "manual level grid invalid for current price regime" : null,
     Math.abs(a.tf.confluence) >= 0.5 ? "multi-timeframe aligned" : "need timeframe confirmation"
-  ];
+  ].filter(Boolean);
 
   const lines = [
     `Preferred action: ${preferredAction(a)}`,
-    `Invalidation: ${invalidation !== undefined ? fp(invalidation) : "range break required"}`,
+    `Invalidation: ${gridUnavailable ? "n/a" : invalidation !== undefined ? fp(invalidation) : "range break required"}`,
     `Conditions needed: ${conditions.join("; ")}`
   ];
   if (setupValid && a.signal.targets.length > 0) {
@@ -223,11 +268,12 @@ export function buildDiscordPayload(
   triggerReason?: string
 ): Record<string, unknown> {
   const primaryDegraded = a.data.snapshot.activePrimaryHealth.qualityScore < 60;
-  const brokerMissing = a.data.snapshot.xauBrokerTick === null || a.data.snapshot.brokerHealth.qualityScore < 60;
+  const brokerMissing = a.data.snapshot.xauBrokerTick === null || a.data.snapshot.brokerHealth.stale;
   const fallback = a.data.snapshot.primary.fallback;
   const brokerPrimary = isBrokerPrimary(a);
   const state = stateLabel(a);
   const titleFlags = [
+    isTestData(a) ? "TEST DATA" : null,
     brokerPrimary ? "BROKER PRIMARY" : null,
     brokerPrimary && a.data.futuresFlowStatus === "unknown" ? "FUTURES FLOW UNKNOWN" : null,
     primaryDegraded ? "PRIMARY DATA DEGRADED" : null,
@@ -240,7 +286,7 @@ export function buildDiscordPayload(
   const gcHealth = a.data.sourceHealth.find((h) => h.source === a.data.snapshot.primary.source);
   const gcProxyHealth = a.data.sourceHealth.find((h) => h.source === "yahoo");
   const brokerHealth = a.data.sourceHealth.find((h) => h.source === "pepperstone");
-  const spread = a.data.basis.brokerSpread !== undefined ? fp(a.data.basis.brokerSpread) : "unavailable";
+  const spread = brokerSpreadLabel(a);
   const basisLabel = a.data.basis.available && a.data.basis.futuresMinusBroker !== undefined
     ? `proxy_basis=${fSigned(a.data.basis.futuresMinusBroker)}`
     : "basis=unavailable";
@@ -249,10 +295,10 @@ export function buildDiscordPayload(
     : a.data.snapshot.gcTick ? `${a.data.snapshot.gcTick.source} reference`
     : "unavailable";
   const dataLine = brokerPrimary
-    ? `Data: source=Pepperstone cTrader FIX | gc_proxy=${gcProxyLabel} | gc_age=${ageLabel(gcProxyHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread} | ${basisLabel}`
+    ? `Data: source=${sourceLabel(a)} | gc_proxy=${gcProxyLabel} | gc_age=${ageLabel(gcProxyHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread} | ${basisLabel}`
     : `Data: source=${sourceLabel(a)} | gc_age=${ageLabel(gcHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread}`;
   const description = [
-    `Bias: ${state} | trend=${trendLabel(a.trend)} | regime=${regimeLabel(a.regime)} | change=${fPct(a.dailyChangePct)}`,
+    `Bias: ${state} | trend=${trendLabel(a.trend)} | regime=${regimeLabel(a.regime)} | change=${dailyChangeLabel(a)}`,
     dataLine,
     eventLine(a),
     triggerReason ? `Trigger: ${triggerReason}` : null
@@ -261,6 +307,7 @@ export function buildDiscordPayload(
   const stateSummary = [
     `Macro regime: ${a.macroDrivers.macroBias}`,
     `Futures flow: ${a.data.futuresFlowStatus}${a.data.futuresFlowStatus === "confirmed" ? ` / tf=${a.tf.confluence.toFixed(2)}` : ""}`,
+    `Level grid: ${a.levelGridStatus}`,
     `Volatility: ${volLabel(a.volRegime)}`,
     `Session: ${sessionLabel ?? "n/a"}`,
     `Trade permission: ${a.eventRisk.tradePermission}`
@@ -275,6 +322,7 @@ export function buildDiscordPayload(
     "model=xau_state_v2",
     `mode=${brokerPrimary ? "broker-primary" : "standard"}`,
     `futuresFlow=${a.data.futuresFlowStatus}`,
+    `levelGrid=${a.levelGridStatus}`,
     "scores=uncalibrated",
     `sourceHealth=${sourceHealthText(a)}`,
     `optionalSourceHealth=${a.data.snapshot.optionalSourceHealth.map((h) => `${h.source}:${h.ok ? "ok" : "missing"}`).join(",") || "none"}`,

@@ -38,7 +38,8 @@ import {
   MomentumState,
   VolatilityRegime,
   TimeframeSummary,
-  TradingSignal
+  TradingSignal,
+  LevelGridStatus
 } from "./types.js";
 import { detectHeadAndShoulders } from "./patterns.js";
 import { EventRisk } from "../events/event-calendar.js";
@@ -81,6 +82,49 @@ const CATEGORY_WEIGHT: Record<PriceLevel["category"], number> = {
   "pivot":       0.55,
   "indicator":   0.50,
 };
+
+function assessLevelGrid(
+  price: number,
+  atrVal: number | null
+): { status: LevelGridStatus; nearestLevelDistance: number | null } {
+  if (LEVELS.length === 0) return { status: "invalid", nearestLevelDistance: null };
+
+  const prices = LEVELS.map((level) => level.price);
+  const minLevel = Math.min(...prices);
+  const maxLevel = Math.max(...prices);
+  const nearestLevelDistance = Math.min(...prices.map((levelPrice) => Math.abs(levelPrice - price)));
+  const threshold = Math.max((atrVal ?? 0) * 20, price * 0.02);
+  const outOfRange =
+    price < minLevel - threshold ||
+    price > maxLevel + threshold ||
+    nearestLevelDistance > threshold;
+
+  return {
+    status: outOfRange ? "out-of-range" : "valid",
+    nearestLevelDistance: roundTo(nearestLevelDistance, 2)
+  };
+}
+
+function isSyntheticOrTestFeed(snapshot: DataSnapshot): boolean {
+  return (
+    snapshot.activePrimaryHealth.testData === true ||
+    snapshot.activePrimaryHealth.feed === "synthetic_test" ||
+    snapshot.xauBrokerTick?.testData === true ||
+    snapshot.xauBrokerTick?.feed === "synthetic_test"
+  );
+}
+
+function forceFlatSignal(signal: TradingSignal, price: number): TradingSignal {
+  return {
+    ...signal,
+    direction: "FLAT",
+    strength: 0,
+    entry: roundTo(price, 2),
+    stopLoss: roundTo(price, 2),
+    targets: [],
+    riskReward: 0
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Volatility Regime — returns-based
@@ -403,10 +447,11 @@ function computeTargets(
   price: number,
   trend: TrendDirection,
   expectedMove: number | null,
-  regime: MarketRegime
+  regime: MarketRegime,
+  useLevelGrid = true
 ): { bullTarget: number; bearTarget: number; expectedRange: { min: number; max: number } } {
-  const resistances = resistancesAbove(price, 3);
-  const supports = supportsBelow(price, 3);
+  const resistances = useLevelGrid ? resistancesAbove(price, 3) : [];
+  const supports = useLevelGrid ? supportsBelow(price, 3) : [];
 
   // Bull target: category-weighted average of nearest resistances
   let bullTarget = price + Math.max(expectedMove ?? 0, 10) * 2;
@@ -467,7 +512,8 @@ function computeBreakoutScore(
   rsiVal: number | null,
   vrVal: number | null,
   zoneInfluence: number,
-  levelProximityScore: number
+  levelProximityScore: number,
+  useLevelGrid = true
 ): { up: number; down: number } {
   // Heuristic directional evidence mapped into 0–1. This is not calibrated
   // against historical outcomes and must not be interpreted as probability.
@@ -498,23 +544,25 @@ function computeBreakoutScore(
   z += zoneInfluence * 0.6;
 
   // Grid position — extreme positions favor mean-reversion
-  const gp = gridPosition(price);
-  if (gp > 0.85) z -= 0.3;
-  else if (gp < 0.15) z += 0.3;
+  if (useLevelGrid) {
+    const gp = gridPosition(price);
+    if (gp > 0.85) z -= 0.3;
+    else if (gp < 0.15) z += 0.3;
 
-  // Level proximity reduces breakout odds (stronger level = harder to break)
-  const nearestRes = resistancesAbove(price, 1)[0];
-  const nearestSup = supportsBelow(price, 1)[0];
+    // Level proximity reduces breakout odds (stronger level = harder to break)
+    const nearestRes = resistancesAbove(price, 1)[0];
+    const nearestSup = supportsBelow(price, 1)[0];
 
-  if (nearestRes) {
-    const dist = nearestRes.price - price;
-    const strength = nearestRes.strength * CATEGORY_WEIGHT[nearestRes.category];
-    if (dist < 15) z -= strength * 0.4 * Math.exp(-dist / 8);
-  }
-  if (nearestSup) {
-    const dist = price - nearestSup.price;
-    const strength = nearestSup.strength * CATEGORY_WEIGHT[nearestSup.category];
-    if (dist < 15) z += strength * 0.4 * Math.exp(-dist / 8);
+    if (nearestRes) {
+      const dist = nearestRes.price - price;
+      const strength = nearestRes.strength * CATEGORY_WEIGHT[nearestRes.category];
+      if (dist < 15) z -= strength * 0.4 * Math.exp(-dist / 8);
+    }
+    if (nearestSup) {
+      const dist = price - nearestSup.price;
+      const strength = nearestSup.strength * CATEGORY_WEIGHT[nearestSup.category];
+      if (dist < 15) z += strength * 0.4 * Math.exp(-dist / 8);
+    }
   }
 
   const scoreUp = sigmoid(z, 1, 0);
@@ -601,7 +649,8 @@ function computeSignal(
   trendScore: number,
   confidence: number,
   atrVal: number | null,
-  kamaVal: number | null
+  kamaVal: number | null,
+  useLevelGrid = true
 ): TradingSignal {
   const atr = atrVal ?? 8;
 
@@ -634,12 +683,12 @@ function computeSignal(
   // Stop: beyond nearest S/R + ATR buffer
   let stopLoss: number;
   if (isLong) {
-    const support = supportsBelow(price, 1)[0];
+    const support = useLevelGrid ? supportsBelow(price, 1)[0] : undefined;
     stopLoss = support
       ? Math.min(support.price - atr * 0.3, price - atr * 1.2)
       : price - atr * 1.5;
   } else {
-    const resistance = resistancesAbove(price, 1)[0];
+    const resistance = useLevelGrid ? resistancesAbove(price, 1)[0] : undefined;
     stopLoss = resistance
       ? Math.max(resistance.price + atr * 0.3, price + atr * 1.2)
       : price + atr * 1.5;
@@ -647,10 +696,10 @@ function computeSignal(
 
   // Targets: next 2 S/R levels in signal direction
   const targets: number[] = [];
-  if (isLong) {
+  if (useLevelGrid && isLong) {
     const res = resistancesAbove(price, 2);
     targets.push(...res.map(r => r.price));
-  } else {
+  } else if (useLevelGrid) {
     const sup = supportsBelow(price, 2);
     targets.push(...sup.map(s => s.price));
   }
@@ -682,8 +731,11 @@ function computeSignal(
 function computeRiskReward(
   price: number,
   bullTarget: number,
-  bearTarget: number
+  bearTarget: number,
+  useLevelGrid = true
 ): { rrLong: number; rrShort: number } {
+  if (!useLevelGrid) return { rrLong: 0, rrShort: 0 };
+
   const nearestSup = supportsBelow(price, 1)[0];
   const nearestRes = resistancesAbove(price, 1)[0];
 
@@ -737,6 +789,8 @@ export function analyzeGold(
 ): GoldAnalysis {
   const price = snapshot.primary.price;
   const isBrokerPrimary = snapshot.primary.instrumentKind === "broker_spot";
+  const macroDrivers = context.macroDrivers ?? emptyMacroDrivers();
+  const testFeed = isSyntheticOrTestFeed(snapshot);
   const prices = snapshot.bars.m1.map((bar) => bar.close);
   const hasIndicators = prices.length >= MIN_BUFFER_FOR_INDICATORS;
 
@@ -820,13 +874,17 @@ export function analyzeGold(
   const { momentum, score: momentumScore } = detectMomentum(prices, returns);
 
   // ── Level Analysis (ATR-adaptive sigma) ──
-  const { levelProximityScore, zoneInfluence } = analyzeLevelProximity(price, atrVal);
-  const resistances = resistancesAbove(price, 4);
-  const supports = supportsBelow(price, 4);
+  const levelGrid = assessLevelGrid(price, atrVal);
+  const levelGridUsable = levelGrid.status === "valid";
+  const { levelProximityScore, zoneInfluence } = levelGridUsable
+    ? analyzeLevelProximity(price, atrVal)
+    : { levelProximityScore: 0, zoneInfluence: 0 };
+  const resistances = levelGridUsable ? resistancesAbove(price, 4) : [];
+  const supports = levelGridUsable ? supportsBelow(price, 4) : [];
   const nearestRes = resistances[0] ?? null;
   const nearestSup = supports[0] ?? null;
-  const zone = activeZone(price);
-  const magnet = strongestMagnet(price, atrVal ? atrVal * 3 : 30);
+  const zone = levelGridUsable ? activeZone(price) : null;
+  const magnet = levelGridUsable ? strongestMagnet(price, atrVal ? atrVal * 3 : 30) : null;
 
   // ── Volatility Score (returns-based) ──
   const volatilityScore = currentVol > 0 && historicalVol > 0
@@ -844,26 +902,25 @@ export function analyzeGold(
 
   // ── Targets ──
   const { bullTarget, bearTarget, expectedRange } = computeTargets(
-    price, trend, expectedMove, regime
+    price, trend, expectedMove, regime, levelGridUsable
   );
 
   // ── Breakout Score (uncalibrated directional pressure) ──
   const breakout = computeBreakoutScore(
     price, trendScore, momentum, normMomentum,
-    rsiVal, vrVal, zoneInfluence, levelProximityScore
+    rsiVal, vrVal, zoneInfluence, levelProximityScore, levelGridUsable
   );
 
   // ── Risk/Reward ──
-  const { rrLong, rrShort } = computeRiskReward(price, bullTarget, bearTarget);
+  const { rrLong, rrShort } = computeRiskReward(price, bullTarget, bearTarget, levelGridUsable);
 
   // ── Confidence (evidence-based) ──
   const rawConfidence = computeConfidence(
     prices.length, trendScore, tfConfluence, normMomentum,
     hurstVal, vrVal, levelProximityScore, regime, volRegime
   );
-  const confidence = isBrokerPrimary && snapshot.futuresFlowStatus !== "confirmed"
-    ? Math.min(rawConfidence, 75)
-    : rawConfidence;
+  let confidence = rawConfidence;
+  if (isBrokerPrimary) confidence = Math.min(confidence, 75);
 
   // ── Pattern Detection (Head & Shoulders) ──
   const patternResult = prices.length >= 30
@@ -873,16 +930,32 @@ export function analyzeGold(
   const patternImpact = patternWatch ? "watch-only" as const : null;
 
   // ── Actionable Signal ──
-  let signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal);
-  const eventRisk = context.eventRisk ?? NORMAL_EVENT_RISK;
+  const futuresAndMacroUnknown =
+    isBrokerPrimary &&
+    snapshot.futuresFlowStatus === "unknown" &&
+    macroDrivers.macroBias === "unknown";
+  let eventRisk: EventRisk = { ...(context.eventRisk ?? NORMAL_EVENT_RISK) };
+
+  if (futuresAndMacroUnknown) {
+    confidence = Math.min(confidence, 35);
+    if (eventRisk.tradePermission === "allowed") {
+      eventRisk = { ...eventRisk, tradePermission: "watch-only" };
+    }
+  }
+  if (levelGrid.status === "out-of-range" || levelGrid.status === "invalid") {
+    confidence = Math.min(confidence, 25);
+    if (eventRisk.tradePermission === "allowed") {
+      eventRisk = { ...eventRisk, tradePermission: "watch-only" };
+    }
+  }
+  if (testFeed) {
+    confidence = Math.min(confidence, 10);
+    eventRisk = { ...eventRisk, tradePermission: "blocked" };
+  }
+
+  let signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal, levelGridUsable);
   if (eventRisk.tradePermission !== "allowed") {
-    signal = {
-      ...signal,
-      direction: "FLAT",
-      strength: 0,
-      targets: [],
-      riskReward: 0
-    };
+    signal = forceFlatSignal(signal, price);
   }
 
   const levelStates = validateLevelsAgainstBars(
@@ -933,6 +1006,8 @@ export function analyzeGold(
     nearestSupport: nearestSup,
     currentZone: zone,
     magnetLevel: magnet,
+    levelGridStatus: levelGrid.status,
+    nearestLevelDistance: levelGrid.nearestLevelDistance,
 
     bullTarget,
     bearTarget,
@@ -982,7 +1057,7 @@ export function analyzeGold(
     },
 
     macro: context.macro ?? null,
-    macroDrivers: context.macroDrivers ?? emptyMacroDrivers(),
+    macroDrivers,
     eventRisk
   };
 }

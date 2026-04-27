@@ -18,6 +18,7 @@ export type MarketRegime =
 export type TrendDirection = "bullish" | "bearish" | "neutral";
 export type MomentumState = "accelerating" | "steady" | "decaying";
 export type VolatilityRegime = "low" | "normal" | "high" | "extreme";
+export type LevelGridStatus = "valid" | "stale" | "out-of-range" | "invalid";
 
 // ---------------------------------------------------------------------------
 // Multi-Timeframe Summary
@@ -98,6 +99,8 @@ export interface GoldAnalysis {
   nearestSupport: PriceLevel | null;
   currentZone: PriceZone | null;
   magnetLevel: PriceLevel | null;
+  levelGridStatus: LevelGridStatus;
+  nearestLevelDistance: number | null;
 
   // --- Targets ---
   bullTarget: number;

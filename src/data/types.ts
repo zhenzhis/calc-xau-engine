@@ -20,6 +20,11 @@ export interface SourceHealth {
   latencyMs: number;
   stale: boolean;
   error?: string;
+  warning?: string;
+  feed?: string;
+  sidecar?: string;
+  sessionVerified?: boolean;
+  testData?: boolean;
   qualityScore: number;
 }
 
@@ -33,6 +38,11 @@ export interface MarketTick {
   mid: number;
   last?: number;
   volume?: number;
+  qualityScore?: number;
+  feed?: string;
+  sidecar?: string;
+  sessionVerified?: boolean;
+  testData?: boolean;
   exchange?: string;
   contract?: string;
   raw?: unknown;
