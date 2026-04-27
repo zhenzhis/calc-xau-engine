@@ -48,7 +48,7 @@ function volLabel(vol: VolatilityRegime): string {
 }
 
 function embedColor(a: GoldAnalysis): number {
-  if (a.data.sourceHealth.some((h) => h.qualityScore < 60)) return 0xd29922;
+  if (a.data.snapshot.activePrimaryHealth.qualityScore < 60) return 0xd29922;
   if (a.eventRisk.tradePermission === "blocked") return 0xff4444;
   if (a.trend === "bullish") return 0x3fb950;
   if (a.trend === "bearish") return 0xff7b72;
@@ -66,7 +66,7 @@ function sourceLabel(a: GoldAnalysis): string {
 
 function stateLabel(a: GoldAnalysis): "LONG-PULLBACK" | "SHORT-REJECTION" | "RANGE-WATCH" | "NO-TRADE" {
   if (a.eventRisk.tradePermission === "blocked") return "NO-TRADE";
-  if (a.data.sourceHealth.some((h) => h.source === a.data.snapshot.primary.source && h.qualityScore < 25)) {
+  if (a.data.snapshot.activePrimaryHealth.qualityScore < 25) {
     return "NO-TRADE";
   }
   if (a.trend === "bullish" && a.signal.direction !== "FLAT") return "LONG-PULLBACK";
@@ -85,9 +85,12 @@ function preferredAction(a: GoldAnalysis): string {
 }
 
 function sourceHealthText(a: GoldAnalysis): string {
-  return a.data.sourceHealth
+  const active = `active=${a.data.snapshot.activePrimaryHealth.source}:${a.data.snapshot.activePrimaryHealth.qualityScore}${a.data.snapshot.activePrimaryHealth.stale ? "/stale" : ""}`;
+  const broker = `broker=${a.data.snapshot.brokerHealth.source}:${a.data.snapshot.brokerHealth.qualityScore}${a.data.snapshot.brokerHealth.stale ? "/stale" : ""}`;
+  const optional = a.data.snapshot.optionalSourceHealth
     .map((h) => `${h.source}:${h.qualityScore}${h.stale ? "/stale" : ""}`)
     .join(",");
+  return optional ? `${active},${broker},optional=${optional}` : `${active},${broker}`;
 }
 
 function eventLine(a: GoldAnalysis): string {
@@ -160,13 +163,16 @@ function keyLevels(a: GoldAnalysis): string {
 
 function setupField(a: GoldAnalysis): string {
   const setupValid = a.eventRisk.tradePermission === "allowed" && stateLabel(a) !== "NO-TRADE";
+  const primaryOk = a.data.snapshot.activePrimaryHealth.qualityScore >= 60;
+  const brokerOk = a.data.snapshot.xauBrokerTick !== null && a.data.snapshot.brokerHealth.qualityScore >= 60;
   const invalidation =
     a.trend === "bullish" ? a.nearestSupport?.price
     : a.trend === "bearish" ? a.nearestResistance?.price
     : undefined;
   const conditions = [
     a.eventRisk.tradePermission === "allowed" ? "event gate clear" : `event gate=${a.eventRisk.tradePermission}`,
-    a.data.sourceHealth.some((h) => h.qualityScore < 60) ? "improve source quality" : "source quality acceptable",
+    primaryOk ? "primary source acceptable" : "improve primary source quality",
+    brokerOk ? "broker quote available" : "broker quote missing",
     Math.abs(a.tf.confluence) >= 0.5 ? "multi-timeframe aligned" : "need timeframe confirmation"
   ];
 
@@ -201,12 +207,14 @@ export function buildDiscordPayload(
   sessionLabel?: string,
   triggerReason?: string
 ): Record<string, unknown> {
-  const sourceDegraded = a.data.sourceHealth.some((h) => h.qualityScore < 60);
+  const primaryDegraded = a.data.snapshot.activePrimaryHealth.qualityScore < 60;
+  const brokerMissing = a.data.snapshot.xauBrokerTick === null || a.data.snapshot.brokerHealth.qualityScore < 60;
   const fallback = a.data.snapshot.primary.fallback;
   const state = stateLabel(a);
   const titleFlags = [
-    sourceDegraded ? "DATA DEGRADED" : null,
-    fallback ? "FALLBACK DATA" : null
+    primaryDegraded ? "PRIMARY DATA DEGRADED" : null,
+    fallback ? "FALLBACK DATA" : null,
+    brokerMissing ? "BROKER QUOTE MISSING" : null
   ].filter(Boolean).join(" | ");
   const titlePrefix = titleFlags ? `[${titleFlags}] ` : "";
   const title = `${titlePrefix}XAU State | ${fp(a.price)} | ${state} | Evidence ${a.confidence}`;
@@ -238,7 +246,8 @@ export function buildDiscordPayload(
     "model=xau_state_v2",
     "scores=uncalibrated",
     `sourceHealth=${sourceHealthText(a)}`,
-    `barCoverage=1m:${a.data.barCoverage.m1},5m:${a.data.barCoverage.m5},15m:${a.data.barCoverage.m15},1h:${a.data.barCoverage.h1}`,
+    `optionalSourceHealth=${a.data.snapshot.optionalSourceHealth.map((h) => `${h.source}:${h.ok ? "ok" : "missing"}`).join(",") || "none"}`,
+    `barCoverage=1m:${a.data.barCoverage.m1}/${a.data.barCoverage.m1CompleteRatio.toFixed(2)},5m:${a.data.barCoverage.m5}/${a.data.barCoverage.m5CompleteRatio.toFixed(2)},15m:${a.data.barCoverage.m15}/${a.data.barCoverage.m15CompleteRatio.toFixed(2)},1h:${a.data.barCoverage.h1}/${a.data.barCoverage.h1CompleteRatio.toFixed(2)}`,
     `eventGate=${a.eventRisk.mode}`
   ].join(" | ");
 

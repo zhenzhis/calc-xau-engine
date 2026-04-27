@@ -55,9 +55,21 @@ test("Discord payload labels breakout values as scores, not probabilities", () =
     gcCandle: m1[m1.length - 1],
     xauBrokerTick: null,
     basis: { available: false },
+    activePrimaryHealth: health("yahoo", 75),
+    brokerHealth: health("pepperstone", 0),
+    optionalSourceHealth: [health("rithmic", 0)],
     sourceHealth: [health("yahoo", 75), health("rithmic", 0), health("pepperstone", 0)],
     bars: { m1, m5: [], m15: [], h1: [] },
-    barCoverage: { m1: m1.length, m5: 0, m15: 0, h1: 0 }
+    barCoverage: {
+      m1: m1.length,
+      m5: 0,
+      m15: 0,
+      h1: 0,
+      m1CompleteRatio: 1,
+      m5CompleteRatio: 0,
+      m15CompleteRatio: 0,
+      h1CompleteRatio: 0
+    }
   };
   const analysis = analyzeGold(snapshot);
   const payload = JSON.stringify(buildDiscordPayload(analysis));

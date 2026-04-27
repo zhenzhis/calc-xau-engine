@@ -23,6 +23,12 @@ function latestComplete(candles: Candle[]): Candle | null {
   return candles[candles.length - 1] ?? null;
 }
 
+function completeRatio(candles: Candle[]): number {
+  if (candles.length === 0) return 0;
+  const total = candles.reduce((sum, candle) => sum + (candle.completenessRatio ?? (candle.complete ? 1 : 0)), 0);
+  return Math.round((total / candles.length) * 100) / 100;
+}
+
 export class MarketDataHub {
   private readonly yahoo: YahooGoldProvider;
   private readonly rithmic: RithmicFileProvider;
@@ -77,6 +83,9 @@ export class MarketDataHub {
         : { available: false };
 
     const quote = selected.kind === "yahoo" ? this.yahoo.getLastQuote() : null;
+    const sourceHealth = [rithmic.health, yahoo.health, broker.health];
+    const activePrimaryHealth = selected.health;
+    const brokerHealth = broker.health;
 
     return {
       asOfMs: timestampMs,
@@ -95,13 +104,22 @@ export class MarketDataHub {
       gcCandle,
       xauBrokerTick: brokerTick,
       basis,
-      sourceHealth: [rithmic.health, yahoo.health, broker.health],
+      activePrimaryHealth,
+      brokerHealth,
+      optionalSourceHealth: sourceHealth.filter(
+        (health) => health.source !== activePrimaryHealth.source && health.source !== "pepperstone"
+      ),
+      sourceHealth,
       bars: { m1, m5, m15, h1 },
       barCoverage: {
         m1: m1.length,
         m5: m5.length,
         m15: m15.length,
-        h1: h1.length
+        h1: h1.length,
+        m1CompleteRatio: completeRatio(m1),
+        m5CompleteRatio: completeRatio(m5),
+        m15CompleteRatio: completeRatio(m15),
+        h1CompleteRatio: completeRatio(h1)
       }
     };
   }

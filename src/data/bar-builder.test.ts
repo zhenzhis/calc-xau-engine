@@ -57,6 +57,39 @@ test("aggregates 5m OHLCV from real candle high low open close", () => {
   assert.equal(fiveMinute[0].close, 101);
   assert.equal(fiveMinute[0].volume, 20);
   assert.equal(fiveMinute[0].tickCount, 5);
+  assert.equal(fiveMinute[0].complete, true);
+  assert.equal(fiveMinute[0].completenessRatio, 1);
+});
+
+test("marks 5m aggregate incomplete when one 1m child is missing", () => {
+  const oneMinute = buildCandlesFromTicks([
+    tick(0, 100),
+    tick(60_000, 101),
+    tick(180_000, 103),
+    tick(240_000, 104)
+  ], "1m", 300_000);
+
+  const fiveMinute = aggregateCandles(oneMinute, "5m", 300_000);
+  assert.equal(fiveMinute.length, 1);
+  assert.equal(fiveMinute[0].complete, false);
+  assert.equal(fiveMinute[0].completenessRatio, 0.8);
+  assert.ok(fiveMinute[0].qualityScore < 100);
+});
+
+test("marks 5m aggregate complete with five continuous 1m children", () => {
+  const oneMinute = buildCandlesFromTicks([
+    tick(0, 100),
+    tick(60_000, 101),
+    tick(120_000, 102),
+    tick(180_000, 103),
+    tick(240_000, 104)
+  ], "1m", 300_000);
+
+  const fiveMinute = aggregateCandles(oneMinute, "5m", 300_000);
+  assert.equal(fiveMinute.length, 1);
+  assert.equal(fiveMinute[0].complete, true);
+  assert.equal(fiveMinute[0].completenessRatio, 1);
+  assert.equal(fiveMinute[0].qualityScore, 100);
 });
 
 test("marks stale Rithmic file source explicitly", async () => {

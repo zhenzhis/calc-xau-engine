@@ -12,6 +12,10 @@ export function timeframeMs(timeframe: Timeframe): number {
   return TIMEFRAME_MS[timeframe];
 }
 
+function expectedOneMinuteChildCount(timeframe: "5m" | "15m" | "1h"): number {
+  return timeframeMs(timeframe) / timeframeMs("1m");
+}
+
 export function bucketStartMs(timestampMs: number, timeframe: Timeframe): number {
   const size = timeframeMs(timeframe);
   return Math.floor(timestampMs / size) * size;
@@ -73,7 +77,8 @@ export function buildCandlesFromTicks(
       tickCount: group.length,
       vwap: weighted,
       complete: startMs + timeframeMs(timeframe) <= nowMs,
-      qualityScore: Math.min(...group.map(() => 100))
+      qualityScore: Math.min(...group.map(() => 100)),
+      completenessRatio: 1
     });
   }
 
@@ -118,6 +123,7 @@ export function aggregateCandles(
     const ordered = group.slice().sort((a, b) => a.startMs - b.startMs);
     const first = ordered[0];
     const last = ordered[ordered.length - 1];
+    const completeness = computeBarCompleteness(ordered, timeframe, startMs);
     const volumeParts = ordered.filter((candle) => candle.volume !== undefined);
     const volume =
       volumeParts.length > 0
@@ -145,10 +151,46 @@ export function aggregateCandles(
       volume,
       tickCount: ordered.reduce((sum, candle) => sum + candle.tickCount, 0),
       vwap,
-      complete: ordered.every((candle) => candle.complete) && startMs + timeframeMs(timeframe) <= nowMs,
-      qualityScore: Math.min(...ordered.map((candle) => candle.qualityScore))
+      complete:
+        completeness.complete &&
+        ordered.every((candle) => candle.complete) &&
+        startMs + timeframeMs(timeframe) <= nowMs,
+      qualityScore: Math.round(Math.min(...ordered.map((candle) => candle.qualityScore)) * completeness.completenessRatio),
+      completenessRatio: completeness.completenessRatio
     });
   }
 
   return result.sort((a, b) => a.startMs - b.startMs);
+}
+
+export function computeBarCompleteness(
+  oneMinuteCandles: Candle[],
+  timeframe: "5m" | "15m" | "1h",
+  bucketStartMsValue?: number
+): { expectedCount: number; actualCount: number; completenessRatio: number; continuous: boolean; complete: boolean } {
+  const expectedCount = expectedOneMinuteChildCount(timeframe);
+  if (oneMinuteCandles.length === 0) {
+    return { expectedCount, actualCount: 0, completenessRatio: 0, continuous: false, complete: false };
+  }
+
+  const startMs = bucketStartMsValue ?? bucketStartMs(oneMinuteCandles[0].startMs, timeframe);
+  const starts = new Set(oneMinuteCandles.map((candle) => candle.startMs));
+  let actualCount = 0;
+  for (let i = 0; i < expectedCount; i++) {
+    if (starts.has(startMs + i * timeframeMs("1m"))) actualCount++;
+  }
+
+  const ordered = oneMinuteCandles.slice().sort((a, b) => a.startMs - b.startMs);
+  const continuous =
+    ordered.length === expectedCount &&
+    ordered.every((candle, index) => candle.startMs === startMs + index * timeframeMs("1m"));
+  const completenessRatio = actualCount / expectedCount;
+
+  return {
+    expectedCount,
+    actualCount,
+    completenessRatio,
+    continuous,
+    complete: completenessRatio === 1 && continuous
+  };
 }

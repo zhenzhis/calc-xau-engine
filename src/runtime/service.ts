@@ -73,14 +73,16 @@ function detectTriggers(
   const currPatternSig = current.patternWatch
     ? `HS-${current.patternWatch.type}-${current.patternWatch.timeframe}-${current.patternWatch.phase}`
     : undefined;
-  if (currPatternSig && currPatternSig !== previous.patternSignature) {
-    const isConfirm = current.patternWatch?.phase === "confirmed";
-    return {
-      forced: true,
-      reason: isConfirm
-        ? `头肩形态观察确认 (${current.patternWatch!.timeframe} ${current.patternWatch!.type === "bearish" ? "顶" : "底"})`
-        : `头肩形态观察形成 (${current.patternWatch!.timeframe} ${current.patternWatch!.type === "bearish" ? "顶" : "底"})`
-    };
+  const pattern = current.patternWatch;
+  if (pattern && currPatternSig && currPatternSig !== previous.patternSignature) {
+    if (pattern.timeframe === "1m") return { forced: false, reason: "" };
+    if (pattern.phase !== "confirmed") return { forced: false, reason: "" };
+    if (pattern.timeframe === "5m" || pattern.timeframe === "15m") {
+      return {
+        forced: true,
+        reason: `头肩形态 watch-only 确认 (${pattern.timeframe} ${pattern.type === "bearish" ? "顶" : "底"})`
+      };
+    }
   }
 
   return { forced: false, reason: "" };
@@ -125,7 +127,7 @@ export class BroadcastService {
       loadEventCalendar(this.config.eventCalendarPath),
       this.fredProvider.fetchSnapshot()
     ]);
-    const eventRisk = getEventRisk(events, snapshot.asOfMs, this.config.enableEventGate);
+    const eventRisk = getEventRisk(events, Date.now(), this.config.enableEventGate);
     this.latestAnalysis = analyzeGold(snapshot, {
       macro,
       macroDrivers: this.fredProvider.deriveDrivers(macro),

@@ -52,6 +52,7 @@ export interface Candle {
   vwap?: number;
   complete: boolean;
   qualityScore: number;
+  completenessRatio?: number;
 }
 
 export interface DataProvider {
@@ -84,6 +85,10 @@ export interface BarCoverage {
   m5: number;
   m15: number;
   h1: number;
+  m1CompleteRatio: number;
+  m5CompleteRatio: number;
+  m15CompleteRatio: number;
+  h1CompleteRatio: number;
 }
 
 export interface DataSnapshot {
@@ -93,6 +98,9 @@ export interface DataSnapshot {
   gcCandle: Candle | null;
   xauBrokerTick: MarketTick | null;
   basis: BrokerBasis;
+  activePrimaryHealth: SourceHealth;
+  brokerHealth: SourceHealth;
+  optionalSourceHealth: SourceHealth[];
   sourceHealth: SourceHealth[];
   bars: {
     m1: Candle[];

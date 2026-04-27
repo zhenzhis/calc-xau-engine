@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     loadEventCalendar(config.eventCalendarPath),
     fredProvider.fetchSnapshot()
   ]);
-  const eventRisk = getEventRisk(events, snapshot.asOfMs, config.enableEventGate);
+  const eventRisk = getEventRisk(events, Date.now(), config.enableEventGate);
 
   logger.info("Running analysis...", { barCoverage: snapshot.barCoverage, eventRisk: eventRisk.mode });
   const analysis = analyzeGold(snapshot, {
