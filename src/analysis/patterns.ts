@@ -10,9 +10,9 @@
 //   2. Find local extrema (peaks/troughs) with adaptive prominence
 //   3. Scan for 3-peak (H&S) or 3-trough (inv H&S) sequences
 //   4. Score pattern: symmetry, neckline slope, depth, completion
-//   5. Compute confidence boost ∝ quality × timeframe weight
+//   5. Compute watch score ∝ quality × timeframe weight
 //
-// Timeframe confidence multipliers:
+// Timeframe watch multipliers:
 //   1m:  ×0.08   (noisy, short-term)
 //   5m:  ×0.15   (moderate, filtered)
 //   15m: ×0.22   (significant, institutional)
@@ -50,8 +50,8 @@ export interface HeadAndShouldersPattern {
   phase: "forming" | "confirmed"; // Confirmed = neckline broken
   completion: number;             // 0–1 (how far through neckline break)
 
-  // Confidence contribution
-  confidenceBoost: number;
+  // Watch-only score. This is not added to analysis confidence.
+  watchScore: number;
 }
 
 export interface PatternResult {
@@ -59,11 +59,10 @@ export interface PatternResult {
 }
 
 // ---------------------------------------------------------------------------
-// TF confidence multiplier — institutional convention:
-// higher timeframe = larger sample = more reliable reversal signal
+// TF watch multiplier — higher timeframe patterns deserve more desk attention.
 // ---------------------------------------------------------------------------
 
-const TF_CONFIDENCE: Record<HSTimeframe, number> = {
+const TF_WATCH_SCORE: Record<HSTimeframe, number> = {
   "1m":  0.08,
   "5m":  0.15,
   "15m": 0.22,
@@ -233,10 +232,9 @@ function scanBearishHS(
     // Target: measured move
     const target = roundTo(currentNeckline - patternHeight, 2);
 
-    // Confidence boost: quality × timeframe weight
-    // Confirmed patterns get 1.5× boost
+    // Watch score: quality × timeframe weight. Confirmed patterns get 1.5×.
     const phaseMultiplier = phase === "confirmed" ? 1.5 : 1.0;
-    const confidenceBoost = roundTo(quality * TF_CONFIDENCE[tf] * phaseMultiplier, 1);
+    const watchScore = roundTo(quality * TF_WATCH_SCORE[tf] * phaseMultiplier, 1);
 
     return {
       type: "bearish",
@@ -253,7 +251,7 @@ function scanBearishHS(
       quality: roundTo(quality, 1),
       phase,
       completion: roundTo(completion, 3),
-      confidenceBoost
+      watchScore
     };
   }
 
@@ -322,7 +320,7 @@ function scanBullishHS(
 
     const target = roundTo(currentNeckline + patternHeight, 2);
     const phaseMultiplier = phase === "confirmed" ? 1.5 : 1.0;
-    const confidenceBoost = roundTo(quality * TF_CONFIDENCE[tf] * phaseMultiplier, 1);
+    const watchScore = roundTo(quality * TF_WATCH_SCORE[tf] * phaseMultiplier, 1);
 
     return {
       type: "bullish",
@@ -339,7 +337,7 @@ function scanBullishHS(
       quality: roundTo(quality, 1),
       phase,
       completion: roundTo(completion, 3),
-      confidenceBoost
+      watchScore
     };
   }
 
@@ -411,17 +409,17 @@ export function detectHeadAndShoulders(
     return { headAndShoulders: null };
   }
 
-  // Pick the one with highest confidence boost (quality × TF weight)
+  // Pick the one with highest watch score (quality × TF weight)
   let best = candidates[0];
   for (const c of candidates) {
-    if (c.confidenceBoost > best.confidenceBoost) best = c;
+    if (c.watchScore > best.watchScore) best = c;
   }
 
   // Multi-TF confirmation bonus: if pattern appears on 2+ timeframes, boost
   if (candidates.length >= 2) {
     const sameDirection = candidates.every(c => c.type === best.type);
     if (sameDirection) {
-      best = { ...best, confidenceBoost: roundTo(best.confidenceBoost + 5, 1) };
+      best = { ...best, watchScore: roundTo(best.watchScore + 5, 1) };
     }
   }
 

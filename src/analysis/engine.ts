@@ -8,15 +8,16 @@ import {
   strongestMagnet,
   proximityWeight,
   gridPosition,
-  distanceToNearestZone
+  distanceToNearestZone,
+  updateLevelStats,
+  validateLevelsAgainstBars
 } from "../levels/grid.js";
 import {
   clamp,
   roundTo,
   ema,
   sma,
-  stddev,
-  pseudoAtr,
+  trueRangeAtr,
   rsi,
   roc,
   zScore,
@@ -388,14 +389,14 @@ function analyzeLevelProximity(
 function computeTargets(
   price: number,
   trend: TrendDirection,
-  expectedMove: number,
+  expectedMove: number | null,
   regime: MarketRegime
 ): { bullTarget: number; bearTarget: number; expectedRange: { min: number; max: number } } {
   const resistances = resistancesAbove(price, 3);
   const supports = supportsBelow(price, 3);
 
   // Bull target: category-weighted average of nearest resistances
-  let bullTarget = price + Math.max(expectedMove, 10) * 2;
+  let bullTarget = price + Math.max(expectedMove ?? 0, 10) * 2;
   if (resistances.length > 0) {
     const weighted = resistances.map((r, i) => ({
       price: r.price,
@@ -408,7 +409,7 @@ function computeTargets(
   }
 
   // Bear target: category-weighted average of nearest supports
-  let bearTarget = price - Math.max(expectedMove, 10) * 2;
+  let bearTarget = price - Math.max(expectedMove ?? 0, 10) * 2;
   if (supports.length > 0) {
     const weighted = supports.map((s, i) => ({
       price: s.price,
@@ -422,7 +423,7 @@ function computeTargets(
 
   // Expected range: realized-vol expected move, regime-adjusted
   // expectedMove is already the 1-hour vol-scaled move in $
-  const baseRange = Math.max(expectedMove, 5); // Floor at $5
+  const baseRange = Math.max(expectedMove ?? 5, 5); // Floor at $5 if continuous 1m move is unavailable
   const regimeMultiplier =
     regime === "volatile" ? 2.2
     : regime === "trending-up" || regime === "trending-down" ? 1.8
@@ -442,10 +443,10 @@ function computeTargets(
 }
 
 // ---------------------------------------------------------------------------
-// Breakout Probability — logistic model
+// Breakout Score — uncalibrated directional pressure model
 // ---------------------------------------------------------------------------
 
-function computeBreakoutProbability(
+function computeBreakoutScore(
   price: number,
   trendScore: number,
   momentum: MomentumState,
@@ -455,8 +456,8 @@ function computeBreakoutProbability(
   zoneInfluence: number,
   levelProximityScore: number
 ): { up: number; down: number } {
-  // Logistic regression: P(break_up) = sigmoid(z)
-  // z = Σ(βᵢ × xᵢ)
+  // Heuristic directional evidence mapped into 0–1. This is not calibrated
+  // against historical outcomes and must not be interpreted as probability.
   let z = 0;
 
   // Trend direction and strength (dominant factor)
@@ -503,13 +504,12 @@ function computeBreakoutProbability(
     if (dist < 15) z += strength * 0.4 * Math.exp(-dist / 8);
   }
 
-  // Convert to probability via sigmoid
-  const pUp = sigmoid(z, 1, 0);
-  const pDown = sigmoid(-z, 1, 0);
+  const scoreUp = sigmoid(z, 1, 0);
+  const scoreDown = sigmoid(-z, 1, 0);
 
   return {
-    up: roundTo(clamp(pUp, 0.05, 0.90), 3),
-    down: roundTo(clamp(pDown, 0.05, 0.90), 3)
+    up: roundTo(clamp(scoreUp, 0.05, 0.90), 3),
+    down: roundTo(clamp(scoreDown, 0.05, 0.90), 3)
   };
 }
 
@@ -689,20 +689,28 @@ function computeRiskReward(
 // Expected Move — realized-vol-scaled
 // ---------------------------------------------------------------------------
 
+function getContinuousOneMinuteCloses(bars: DataSnapshot["bars"]["m1"]): number[] {
+  if (bars.length < 2) return bars.map((bar) => bar.close);
+  const tail = [bars[bars.length - 1]];
+  for (let i = bars.length - 2; i >= 0; i--) {
+    const next = tail[0];
+    if (bars[i].startMs + 60_000 !== next.startMs) break;
+    tail.unshift(bars[i]);
+  }
+  return tail.map((bar) => bar.close);
+}
+
 function computeExpectedMove(
   price: number,
-  returns: number[]
-): number {
-  if (returns.length < 10) return 0;
+  oneMinuteBars: DataSnapshot["bars"]["m1"]
+): number | null {
+  const returns = logReturns(getContinuousOneMinuteCloses(oneMinuteBars));
+  if (returns.length < 10) return null;
 
-  // Use last 60 1-min returns (or available)
+  // Use only continuous 1-minute returns. Scale to 1-hour horizon with sqrt(60).
   const window = Math.min(60, returns.length);
   const rv = realizedVol(returns, window);
-
-  // Scale to 1-hour horizon: σ_1h = σ_1m × √60
   const hourlyVol = rv * Math.sqrt(60);
-
-  // Expected move in dollars
   return roundTo(price * hourlyVol, 2);
 }
 
@@ -725,7 +733,9 @@ export function analyzeGold(
   const emaMid = hasIndicators ? ema(prices, EMA_MID) : null;
   const emaSlow = prices.length >= EMA_SLOW ? ema(prices, EMA_SLOW) : null;
   const rsiVal = prices.length >= RSI_PERIOD + 1 ? rsi(prices, RSI_PERIOD) : null;
-  const atrVal = prices.length >= ATR_PERIOD + 1 ? pseudoAtr(prices, ATR_PERIOD) : null;
+  const atrVal = snapshot.bars.m1.length >= ATR_PERIOD + 1
+    ? trueRangeAtr(snapshot.bars.m1, ATR_PERIOD)
+    : null;
   const zScoreVal = prices.length >= ZSCORE_PERIOD ? zScore(prices, ZSCORE_PERIOD) : null;
   const hurstVal = prices.length >= HURST_MIN_POINTS ? hurstExponent(prices) : null;
 
@@ -815,15 +825,15 @@ export function analyzeGold(
   const vrBias = vrVal !== null ? clamp((vrVal - 1) * 3, -1, 1) : 0;
 
   // ── Expected Move (vol-scaled) — must come before targets ──
-  const expectedMove = computeExpectedMove(price, returns);
+  const expectedMove = computeExpectedMove(price, snapshot.bars.m1);
 
   // ── Targets ──
   const { bullTarget, bearTarget, expectedRange } = computeTargets(
     price, trend, expectedMove, regime
   );
 
-  // ── Breakout Probability (logistic model) ──
-  const breakout = computeBreakoutProbability(
+  // ── Breakout Score (uncalibrated directional pressure) ──
+  const breakout = computeBreakoutScore(
     price, trendScore, momentum, normMomentum,
     rsiVal, vrVal, zoneInfluence, levelProximityScore
   );
@@ -841,16 +851,16 @@ export function analyzeGold(
   const patternResult = prices.length >= 30
     ? detectHeadAndShoulders(prices, prices5m, prices15m)
     : { headAndShoulders: null };
-  const pattern = patternResult.headAndShoulders;
-
-  // Apply pattern confidence boost
-  let finalConfidence = confidence;
-  if (pattern) {
-    finalConfidence = Math.round(clamp(confidence + pattern.confidenceBoost, 5, 98));
-  }
+  const patternWatch = patternResult.headAndShoulders;
+  const patternImpact = patternWatch ? "watch-only" as const : null;
 
   // ── Actionable Signal ──
-  const signal = computeSignal(price, trend, trendScore, finalConfidence, atrVal, kamaVal);
+  const signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal);
+
+  const levelStates = validateLevelsAgainstBars(
+    updateLevelStats(LEVELS, snapshot.bars.m1),
+    snapshot.bars.m1
+  );
 
   return {
     asOf: Math.floor(snapshot.primary.timestampMs / 1000),
@@ -888,7 +898,8 @@ export function analyzeGold(
     },
 
     signal,
-    pattern,
+    patternWatch,
+    patternImpact,
 
     nearestResistance: nearestRes,
     nearestSupport: nearestSup,
@@ -900,16 +911,23 @@ export function analyzeGold(
     expectedRange,
     expectedMove,
 
-    breakoutProbUp: breakout.up,
-    breakoutProbDown: breakout.down,
+    breakoutScoreUp: breakout.up,
+    breakoutScoreDown: breakout.down,
 
     rrLong,
     rrShort,
 
-    confidence: finalConfidence,
+    confidence,
 
     resistanceLevels: resistances.map(r => r.price),
     supportLevels: supports.map(s => s.price),
+    levelStates: levelStates.map((level) => ({
+      price: level.price,
+      label: level.label,
+      status: level.status,
+      touchCount: level.touchCount,
+      lastTouchedAt: level.lastTouchedAt
+    })),
 
     drivers: {
       emaCrossScore: roundTo(trendScore, 4),

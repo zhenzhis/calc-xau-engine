@@ -72,17 +72,40 @@ export function stddev(values: number[], period: number): number | null {
   return Math.sqrt(variance);
 }
 
+export interface OhlcBar {
+  high: number;
+  low: number;
+  close: number;
+}
+
 /**
- * Pseudo-ATR computed from price changes (no OHLC needed).
- * Uses absolute price changes over `period` intervals.
+ * Wilder ATR from true range:
+ * TR = max(high-low, abs(high-prevClose), abs(low-prevClose)).
  */
-export function pseudoAtr(values: number[], period: number): number | null {
-  if (values.length < period + 1) return null;
-  const changes: number[] = [];
-  for (let i = values.length - period; i < values.length; i++) {
-    changes.push(Math.abs(values[i] - values[i - 1]));
+export function trueRangeAtr(candles: OhlcBar[], period: number): number | null {
+  if (candles.length < period + 1) return null;
+  const trueRanges: number[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const candle = candles[i];
+    if (i === 0) {
+      trueRanges.push(candle.high - candle.low);
+      continue;
+    }
+    const prevClose = candles[i - 1].close;
+    trueRanges.push(
+      Math.max(
+        candle.high - candle.low,
+        Math.abs(candle.high - prevClose),
+        Math.abs(candle.low - prevClose)
+      )
+    );
   }
-  return changes.reduce((s, v) => s + v, 0) / changes.length;
+
+  let atr = trueRanges.slice(1, period + 1).reduce((sum, tr) => sum + tr, 0) / period;
+  for (let i = period + 1; i < trueRanges.length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+  }
+  return atr;
 }
 
 // ---------------------------------------------------------------------------

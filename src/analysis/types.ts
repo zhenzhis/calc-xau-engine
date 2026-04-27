@@ -58,12 +58,12 @@ export interface GoldAnalysis {
   ema21: number | null;
   ema55: number | null;
   rsi14: number | null;
-  atr: number | null;       // Pseudo-ATR from price changes
+  atr: number | null;       // True-range ATR from canonical OHLC candles
   zScore: number | null;    // Z-score (20-period)
   hurst: number | null;     // Hurst exponent (0–1)
 
   // --- Advanced Indicators (returns-based) ---
-  realizedVol: number | null;        // 1-min return stddev × √60 (hourly scale)
+  realizedVol: number | null;        // Continuous 1-min return stddev × √60 (hourly scale)
   varianceRatio: number | null;      // VR(5) — >1 trending, <1 mean-reverting
   autocorrelation: number | null;    // Lag-1 ACF of returns
   kamaPrice: number | null;          // Kaufman Adaptive Moving Average
@@ -88,7 +88,8 @@ export interface GoldAnalysis {
   signal: TradingSignal;
 
   // --- Pattern Detection ---
-  pattern: HeadAndShouldersPattern | null;
+  patternWatch: HeadAndShouldersPattern | null;
+  patternImpact: "watch-only" | null;
 
   // --- Level Analysis ---
   nearestResistance: PriceLevel | null;
@@ -100,22 +101,29 @@ export interface GoldAnalysis {
   bullTarget: number;
   bearTarget: number;
   expectedRange: { min: number; max: number };
-  expectedMove: number;      // Vol-scaled 1-hour expected move ($)
+  expectedMove: number | null;      // Vol-scaled 1-hour expected move from continuous 1m bars
 
-  // --- Probability ---
-  breakoutProbUp: number;    // 0–1
-  breakoutProbDown: number;  // 0–1
+  // --- Directional pressure scores ---
+  breakoutScoreUp: number;    // 0–1 uncalibrated directional pressure score, not a probability
+  breakoutScoreDown: number;  // 0–1 uncalibrated directional pressure score, not a probability
 
   // --- Risk/Reward ---
   rrLong: number;
   rrShort: number;
 
   // --- Confidence ---
-  confidence: number;        // 0–100 (evidence-based)
+  confidence: number;        // evidenceConfidence 0–100, not win rate
 
   // --- Level Grid Summary ---
   resistanceLevels: number[];
   supportLevels: number[];
+  levelStates: Array<{
+    price: number;
+    label: string;
+    status: "fresh" | "stale" | "invalidated";
+    touchCount: number;
+    lastTouchedAt?: string;
+  }>;
 
   // --- Drivers (diagnostic — all factor scores for transparency) ---
   drivers: {

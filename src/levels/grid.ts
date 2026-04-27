@@ -1,3 +1,6 @@
+import type { Candle } from "../data/types.js";
+import { DEFAULT_MANUAL_LEVEL_METADATA, type LevelStatus } from "./manual-levels.js";
+
 // ---------------------------------------------------------------------------
 // XAUUSD Static Level Grid — Exact Chart Extraction
 //
@@ -26,6 +29,13 @@ export interface PriceLevel {
   type: "resistance" | "support" | "pivot";
   strength: number; // 0–1
   label: string;
+  createdAt: string;
+  source: string;
+  expiresAt?: string;
+  touchCount: number;
+  lastTouchedAt?: string;
+  invalidated: boolean;
+  notes?: string;
 }
 
 export interface PriceZone {
@@ -40,7 +50,10 @@ export interface PriceZone {
 // Key Levels — ordered from highest to lowest
 // ---------------------------------------------------------------------------
 
-export const LEVELS: PriceLevel[] = [
+const RAW_LEVELS: Array<Omit<
+  PriceLevel,
+  "createdAt" | "source" | "expiresAt" | "touchCount" | "lastTouchedAt" | "invalidated" | "notes"
+>> = [
   // ── Extreme / Top ──
   { price: 5260,  category: "extreme",     type: "resistance", strength: 0.95, label: "极限阻力-5260" },
   { price: 5250,  category: "zone-edge",   type: "resistance", strength: 0.92, label: "供给区I顶-5250" },
@@ -81,6 +94,11 @@ export const LEVELS: PriceLevel[] = [
   // ── Deep Support ──
   { price: 4400,  category: "deep",        type: "support",    strength: 0.92, label: "极限支撑-4400" },
 ];
+
+export const LEVELS: PriceLevel[] = RAW_LEVELS.map((level) => ({
+  ...level,
+  ...DEFAULT_MANUAL_LEVEL_METADATA
+}));
 
 // ---------------------------------------------------------------------------
 // Key Zones — user-drawn rectangles
@@ -167,4 +185,57 @@ export function distanceToNearestZone(price: number): { zone: PriceZone; distanc
     }
   }
   return best;
+}
+
+export interface ValidatedLevel extends PriceLevel {
+  status: LevelStatus;
+}
+
+function statusForLevel(level: PriceLevel, nowMs: number): LevelStatus {
+  if (level.invalidated) return "invalidated";
+  if (level.expiresAt && Date.parse(level.expiresAt) <= nowMs) return "stale";
+  const createdMs = Date.parse(level.createdAt);
+  if (Number.isFinite(createdMs) && nowMs - createdMs > 30 * 24 * 60 * 60 * 1000) {
+    return "stale";
+  }
+  return "fresh";
+}
+
+function levelTouched(candle: Candle, level: PriceLevel, tolerance: number): boolean {
+  return candle.low <= level.price + tolerance && candle.high >= level.price - tolerance;
+}
+
+export function validateLevelsAgainstBars(
+  levels: PriceLevel[] = LEVELS,
+  _bars: Candle[] = [],
+  nowMs = Date.now()
+): ValidatedLevel[] {
+  return levels.map((level) => ({
+    ...level,
+    status: statusForLevel(level, nowMs)
+  }));
+}
+
+export function updateLevelStats(
+  levels: PriceLevel[] = LEVELS,
+  bars: Candle[],
+  tolerance = 5
+): PriceLevel[] {
+  if (bars.length === 0) return levels.map((level) => ({ ...level }));
+  const latest = bars[bars.length - 1];
+  return levels.map((level) => {
+    const touchedBars = bars.filter((bar) => levelTouched(bar, level, tolerance));
+    const lastTouched = touchedBars[touchedBars.length - 1];
+    const invalidated =
+      level.invalidated ||
+      (level.type === "resistance" && latest.close > level.price + tolerance * 2) ||
+      (level.type === "support" && latest.close < level.price - tolerance * 2);
+
+    return {
+      ...level,
+      touchCount: level.touchCount + touchedBars.length,
+      lastTouchedAt: lastTouched ? new Date(lastTouched.endMs).toISOString() : level.lastTouchedAt,
+      invalidated
+    };
+  });
 }

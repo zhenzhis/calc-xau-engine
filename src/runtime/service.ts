@@ -66,17 +66,17 @@ function detectTriggers(
     }
   }
 
-  // 6. Head & Shoulders pattern — new detection or phase change
-  const currPatternSig = current.pattern
-    ? `HS-${current.pattern.type}-${current.pattern.timeframe}-${current.pattern.phase}`
+  // 6. Head & Shoulders watch — new detection or phase change
+  const currPatternSig = current.patternWatch
+    ? `HS-${current.patternWatch.type}-${current.patternWatch.timeframe}-${current.patternWatch.phase}`
     : undefined;
   if (currPatternSig && currPatternSig !== previous.patternSignature) {
-    const isConfirm = current.pattern?.phase === "confirmed";
+    const isConfirm = current.patternWatch?.phase === "confirmed";
     return {
       forced: true,
       reason: isConfirm
-        ? `头肩形态确认 (${current.pattern!.timeframe} ${current.pattern!.type === "bearish" ? "顶" : "底"})`
-        : `头肩形态形成 (${current.pattern!.timeframe} ${current.pattern!.type === "bearish" ? "顶" : "底"})`
+        ? `头肩形态观察确认 (${current.patternWatch!.timeframe} ${current.patternWatch!.type === "bearish" ? "顶" : "底"})`
+        : `头肩形态观察形成 (${current.patternWatch!.timeframe} ${current.patternWatch!.type === "bearish" ? "顶" : "底"})`
     };
   }
 
@@ -186,8 +186,8 @@ export class BroadcastService {
       bearTarget: this.latestAnalysis.bearTarget,
       nearestResistance: this.latestAnalysis.nearestResistance?.price,
       nearestSupport: this.latestAnalysis.nearestSupport?.price,
-      patternSignature: this.latestAnalysis.pattern
-        ? `HS-${this.latestAnalysis.pattern.type}-${this.latestAnalysis.pattern.timeframe}-${this.latestAnalysis.pattern.phase}`
+      patternSignature: this.latestAnalysis.patternWatch
+        ? `HS-${this.latestAnalysis.patternWatch.type}-${this.latestAnalysis.patternWatch.timeframe}-${this.latestAnalysis.patternWatch.phase}`
         : undefined
     };
     await this.store.write(nextState);

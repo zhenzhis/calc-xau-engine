@@ -17,7 +17,6 @@ function fp(v: number): string { return `$${v.toFixed(2)}`; }
 function fpInt(v: number): string { return `$${v.toFixed(0)}`; }
 function fSigned(v: number): string { return `${v >= 0 ? "+" : ""}${v.toFixed(2)}`; }
 function fPct(v: number): string { return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`; }
-function fProb(v: number): string { return `${(v * 100).toFixed(0)}%`; }
 function fTsFull(sec: number): string { return `<t:${sec}:f>`; }
 
 function fRegime(r: MarketRegime): string {
@@ -103,7 +102,7 @@ export function buildDiscordPayload(
   const desc: string[] = [];
 
   desc.push(
-    `${sig} **${fRegime(a.regime)} │ ${fTrend(a.trend)} │ 动能${fMomentum(a.momentum)}** (置信 ${a.confidence})`
+    `${sig} **${fRegime(a.regime)} │ ${fTrend(a.trend)} │ 动能${fMomentum(a.momentum)}** (证据强度 ${a.confidence})`
   );
 
   if (sessionLabel) {
@@ -134,7 +133,7 @@ export function buildDiscordPayload(
   }
 
   desc.push("");
-  if (a.expectedMove > 0) {
+  if (a.expectedMove !== null && a.expectedMove > 0) {
     desc.push(`预期波动 **±${fp(a.expectedMove)}** │ 区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`);
   } else {
     desc.push(`区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`);
@@ -195,7 +194,7 @@ export function buildDiscordPayload(
     ["RVol", a.realizedVol !== null ? `${a.realizedVol.toFixed(2)}%` : "—", "VR(5)", vrTag(a.varianceRatio)],
     ["Z-Score", a.zScore !== null ? fSigned(a.zScore) : "—", "ACF(1)", a.autocorrelation !== null ? a.autocorrelation.toFixed(3) : "—"],
     ["ATR", a.atr !== null ? fp(a.atr) : "—", "KAMA", a.kamaPrice !== null ? fpInt(a.kamaPrice) : "—"],
-    ["P(↑)", fProb(a.breakoutProbUp), "P(↓)", fProb(a.breakoutProbDown)],
+    ["Score↑", a.breakoutScoreUp.toFixed(2), "Score↓", a.breakoutScoreDown.toFixed(2)],
     ["R:R多", `${a.rrLong.toFixed(1)}:1`, "R:R空", `${a.rrShort.toFixed(1)}:1`],
   ];
 
@@ -221,7 +220,7 @@ export function buildDiscordPayload(
       ` Price  ${fSigned(priceShift)} (${prev.price.toFixed(0)} → ${a.price.toFixed(0)})`,
       ` Trend  ${fTrend(prev.trend)} → ${fTrend(a.trend)}`,
       ` Regime ${fRegime(prev.regime)} → ${fRegime(a.regime)}`,
-      ` Conf   ${prev.confidence} → ${a.confidence}`,
+      ` Evidence ${prev.confidence} → ${a.confidence}`,
       "```"
     ];
     deltaField = dLines.join("\n");
@@ -247,8 +246,8 @@ export function buildDiscordPayload(
   }
 
   // H&S pattern alert
-  if (a.pattern) {
-    const p = a.pattern;
+  if (a.patternWatch) {
+    const p = a.patternWatch;
     const dir = p.type === "bearish" ? "🔻 头肩顶 (看跌)" : "🔺 头肩底 (看涨)";
     const phaseLabel = p.phase === "confirmed" ? "✅ 已确认突破" : "⏳ 形成中";
     const tfLabel = { "1m": "1分钟", "5m": "5分钟", "15m": "15分钟" }[p.timeframe];
@@ -263,7 +262,8 @@ export function buildDiscordPayload(
       ` 目标  $${p.target.toFixed(0)} (测量幅度)`,
       ` ──────────────────────`,
       ` 对称度 ${p.symmetry.toFixed(0)}%  颈线质量 ${p.necklineQuality.toFixed(0)}%`,
-      ` 综合质量 ${p.quality.toFixed(0)}%  置信加成 +${p.confidenceBoost.toFixed(0)}`,
+      ` 综合质量 ${p.quality.toFixed(0)}%  观察分 ${p.watchScore.toFixed(0)}`,
+      ` 形态仅观察，未经过成交量/回测确认`,
       "```"
     ];
 
@@ -275,7 +275,7 @@ export function buildDiscordPayload(
 
   // ── Footer — machine-readable diagnostic ──
   const footer = [
-    `conf=${a.confidence}`,
+    `evidence=${a.confidence}`,
     `regime=${a.regime}`,
     `vol=${a.volRegime}`,
     `rsi=${a.rsi14?.toFixed(0) ?? "-"}`,
