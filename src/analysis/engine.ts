@@ -41,6 +41,8 @@ import {
   TradingSignal
 } from "./types.js";
 import { detectHeadAndShoulders } from "./patterns.js";
+import { EventRisk } from "../events/event-calendar.js";
+import { emptyMacroDrivers, MacroDrivers, MacroSnapshot } from "../macro/types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,6 +59,17 @@ const HURST_MIN_POINTS = 20;
 const VR_PERIOD = 5;        // Variance ratio look-back multiplier
 const KAMA_ER_PERIOD = 10;  // KAMA efficiency ratio period
 const BB_PERIOD = 20;       // Bollinger Band period
+
+export interface AnalysisContext {
+  macro?: MacroSnapshot | null;
+  macroDrivers?: MacroDrivers;
+  eventRisk?: EventRisk;
+}
+
+const NORMAL_EVENT_RISK: EventRisk = {
+  mode: "normal",
+  tradePermission: "allowed"
+};
 
 // Category weight: institutional levels influence targets and breakout scoring
 const CATEGORY_WEIGHT: Record<PriceLevel["category"], number> = {
@@ -719,7 +732,8 @@ function computeExpectedMove(
 // ---------------------------------------------------------------------------
 
 export function analyzeGold(
-  snapshot: DataSnapshot
+  snapshot: DataSnapshot,
+  context: AnalysisContext = {}
 ): GoldAnalysis {
   const price = snapshot.primary.price;
   const prices = snapshot.bars.m1.map((bar) => bar.close);
@@ -855,7 +869,17 @@ export function analyzeGold(
   const patternImpact = patternWatch ? "watch-only" as const : null;
 
   // ── Actionable Signal ──
-  const signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal);
+  let signal = computeSignal(price, trend, trendScore, confidence, atrVal, kamaVal);
+  const eventRisk = context.eventRisk ?? NORMAL_EVENT_RISK;
+  if (eventRisk.tradePermission !== "allowed") {
+    signal = {
+      ...signal,
+      direction: "FLAT",
+      strength: 0,
+      targets: [],
+      riskReward: 0
+    };
+  }
 
   const levelStates = validateLevelsAgainstBars(
     updateLevelStats(LEVELS, snapshot.bars.m1),
@@ -950,6 +974,10 @@ export function analyzeGold(
       sourceHealth: snapshot.sourceHealth,
       basis: snapshot.basis,
       barCoverage: snapshot.barCoverage
-    }
+    },
+
+    macro: context.macro ?? null,
+    macroDrivers: context.macroDrivers ?? emptyMacroDrivers(),
+    eventRisk
   };
 }

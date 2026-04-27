@@ -1,9 +1,11 @@
 import { analyzeGold } from "../analysis/engine.js";
 import { GoldAnalysis, GoldPublishState } from "../analysis/types.js";
 import { MarketDataHub } from "../data/market-data-hub.js";
+import { getEventRisk, loadEventCalendar } from "../events/event-calendar.js";
 import { activeZone } from "../levels/grid.js";
 import { buildDiscordPayload, publishToDiscord } from "../discord/webhook.js";
 import { Logger } from "../lib/logger.js";
+import { FredProvider } from "../macro/fred-provider.js";
 import { RuntimeConfig } from "../types.js";
 import { getGoldTradingSession, GoldSessionName } from "./market-hours.js";
 import { PublishStateStore } from "./state-store.js";
@@ -91,13 +93,16 @@ export class BroadcastService {
   private latestAnalysis: GoldAnalysis | null = null;
   private lastPublishedAt = 0;
   private currentSession: GoldSessionName = "weekend";
+  private readonly fredProvider: FredProvider;
 
   constructor(
     private readonly config: RuntimeConfig,
     private readonly logger: Logger,
     private readonly marketDataHub: MarketDataHub,
     private readonly store: PublishStateStore
-  ) {}
+  ) {
+    this.fredProvider = new FredProvider(config);
+  }
 
   async pollOnce(): Promise<void> {
     const session = getGoldTradingSession(new Date(), this.config.marketTimezone);
@@ -113,7 +118,16 @@ export class BroadcastService {
     }
 
     const snapshot = await this.marketDataHub.fetchSnapshot();
-    this.latestAnalysis = analyzeGold(snapshot);
+    const [events, macro] = await Promise.all([
+      loadEventCalendar(this.config.eventCalendarPath),
+      this.fredProvider.fetchSnapshot()
+    ]);
+    const eventRisk = getEventRisk(events, snapshot.asOfMs, this.config.enableEventGate);
+    this.latestAnalysis = analyzeGold(snapshot, {
+      macro,
+      macroDrivers: this.fredProvider.deriveDrivers(macro),
+      eventRisk
+    });
 
     this.logger.info("Snapshot analyzed", {
       session: session.label,
@@ -123,6 +137,7 @@ export class BroadcastService {
       trend: this.latestAnalysis.trend,
       regime: this.latestAnalysis.regime,
       confidence: this.latestAnalysis.confidence,
+      eventRisk: this.latestAnalysis.eventRisk.mode,
       barCoverage: this.latestAnalysis.data.barCoverage
     });
   }

@@ -10,6 +10,10 @@ export interface RuntimeConfig {
   maxTickAgeMs: number;
   maxCandleAgeMs: number;
   enableBrokerBasis: boolean;
+  enableFred: boolean;
+  fredCachePath: string;
+  eventCalendarPath: string;
+  enableEventGate: boolean;
   pollIntervalMs: number;
   publishIntervalMs: number;
   requestTimeoutMs: number;

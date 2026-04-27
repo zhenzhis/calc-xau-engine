@@ -113,6 +113,15 @@ export function buildDiscordPayload(
     desc.push(`> ⚡ **EVENT: ${triggerReason}**`);
   }
 
+  if (a.eventRisk.mode !== "normal" && a.eventRisk.nearestEvent) {
+    const eventTs = Math.floor(a.eventRisk.nearestEvent.scheduledTimeMs / 1000);
+    const label =
+      a.eventRisk.mode === "pre-event" ? "WATCH ONLY"
+      : a.eventRisk.mode === "shock" ? "SHOCK MODE"
+      : "CONFIRMATION REQUIRED";
+    desc.push(`Event Risk: ${a.eventRisk.nearestEvent.name} <t:${eventTs}:R> → ${label}`);
+  }
+
   if (a.currentZone) {
     const zt = a.currentZone.type === "supply" ? "供给区" : a.currentZone.type === "demand" ? "需求区" : "过渡区";
     desc.push(`📍 **所在区域: ${a.currentZone.label}** (${zt})`);

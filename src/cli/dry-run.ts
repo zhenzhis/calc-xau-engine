@@ -1,13 +1,16 @@
 import { analyzeGold } from "../analysis/engine.js";
 import { MarketDataHub } from "../data/market-data-hub.js";
 import { buildDiscordPayload, publishToDiscord } from "../discord/webhook.js";
+import { getEventRisk, loadEventCalendar } from "../events/event-calendar.js";
 import { Logger } from "../lib/logger.js";
 import { loadConfig } from "../config.js";
+import { FredProvider } from "../macro/fred-provider.js";
 
 async function main(): Promise<void> {
   const logger = new Logger("info");
   const config = loadConfig();
   const marketDataHub = new MarketDataHub(config, logger);
+  const fredProvider = new FredProvider(config);
 
   logger.info("Fetching market data snapshot...");
   const snapshot = await marketDataHub.fetchSnapshot();
@@ -19,8 +22,18 @@ async function main(): Promise<void> {
     barCoverage: snapshot.barCoverage
   });
 
-  logger.info("Running analysis...", { barCoverage: snapshot.barCoverage });
-  const analysis = analyzeGold(snapshot);
+  const [events, macro] = await Promise.all([
+    loadEventCalendar(config.eventCalendarPath),
+    fredProvider.fetchSnapshot()
+  ]);
+  const eventRisk = getEventRisk(events, snapshot.asOfMs, config.enableEventGate);
+
+  logger.info("Running analysis...", { barCoverage: snapshot.barCoverage, eventRisk: eventRisk.mode });
+  const analysis = analyzeGold(snapshot, {
+    macro,
+    macroDrivers: fredProvider.deriveDrivers(macro),
+    eventRisk
+  });
 
   const payload = buildDiscordPayload(analysis);
 

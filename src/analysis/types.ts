@@ -1,6 +1,8 @@
 import { PriceLevel, PriceZone } from "../levels/grid.js";
 import { HeadAndShouldersPattern } from "./patterns.js";
 import { BarCoverage, BrokerBasis, DataSnapshot, SourceHealth } from "../data/types.js";
+import { EventRisk } from "../events/event-calendar.js";
+import { MacroDrivers, MacroSnapshot } from "../macro/types.js";
 
 // ---------------------------------------------------------------------------
 // Market regime classification
@@ -124,6 +126,11 @@ export interface GoldAnalysis {
     touchCount: number;
     lastTouchedAt?: string;
   }>;
+
+  // --- Macro and event context ---
+  macro: MacroSnapshot | null;
+  macroDrivers: MacroDrivers;
+  eventRisk: EventRisk;
 
   // --- Drivers (diagnostic — all factor scores for transparency) ---
   drivers: {
