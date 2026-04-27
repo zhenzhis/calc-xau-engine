@@ -3,88 +3,197 @@ import {
   GoldPublishState,
   MarketRegime,
   TrendDirection,
-  MomentumState,
   VolatilityRegime
 } from "../analysis/types.js";
-import type { HeadAndShouldersPattern } from "../analysis/patterns.js";
 import { RuntimeConfig } from "../types.js";
 
-// ---------------------------------------------------------------------------
-// Formatting primitives
-// ---------------------------------------------------------------------------
-
 function fp(v: number): string { return `$${v.toFixed(2)}`; }
-function fpInt(v: number): string { return `$${v.toFixed(0)}`; }
 function fSigned(v: number): string { return `${v >= 0 ? "+" : ""}${v.toFixed(2)}`; }
 function fPct(v: number): string { return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`; }
-function fTsFull(sec: number): string { return `<t:${sec}:f>`; }
 
-function fRegime(r: MarketRegime): string {
-  const m: Record<MarketRegime, string> = {
-    "trending-up": "TREND ↑", "trending-down": "TREND ↓",
-    "ranging": "RANGE", "volatile": "VOL ⚡", "consolidation": "CONSOL"
+function ageLabel(ageMs: number): string {
+  if (!Number.isFinite(ageMs)) return "unavailable";
+  if (ageMs < 1_000) return `${ageMs.toFixed(0)}ms`;
+  if (ageMs < 60_000) return `${(ageMs / 1_000).toFixed(0)}s`;
+  return `${(ageMs / 60_000).toFixed(1)}m`;
+}
+
+function truncate(value: string, max = 1000): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function regimeLabel(regime: MarketRegime): string {
+  const labels: Record<MarketRegime, string> = {
+    "trending-up": "trend-up",
+    "trending-down": "trend-down",
+    ranging: "range",
+    volatile: "volatile",
+    consolidation: "consolidation"
   };
-  return m[r];
+  return labels[regime];
 }
 
-function fTrend(t: TrendDirection): string {
-  return t === "bullish" ? "LONG" : t === "bearish" ? "SHORT" : "FLAT";
+function trendLabel(trend: TrendDirection): string {
+  return trend === "bullish" ? "bullish" : trend === "bearish" ? "bearish" : "neutral";
 }
 
-function fMomentum(m: MomentumState): string {
-  return m === "accelerating" ? "加速 ⚡" : m === "steady" ? "稳定" : "衰减";
-}
-
-function fVolRegime(v: VolatilityRegime): string {
-  const m: Record<VolatilityRegime, string> = {
-    low: "低波动", normal: "正常", high: "高波动 ⚠", extreme: "极端波动 🔥"
+function volLabel(vol: VolatilityRegime): string {
+  const labels: Record<VolatilityRegime, string> = {
+    low: "low",
+    normal: "normal",
+    high: "high",
+    extreme: "extreme"
   };
-  return m[v];
+  return labels[vol];
 }
 
-function embedColor(regime: MarketRegime, trend: TrendDirection): number {
-  if (regime === "volatile") return 0xff4444;
-  if (trend === "bullish") return 0x3fb950;
-  if (trend === "bearish") return 0xff7b72;
-  return 0xd29922;
+function embedColor(a: GoldAnalysis): number {
+  if (a.data.sourceHealth.some((h) => h.qualityScore < 60)) return 0xd29922;
+  if (a.eventRisk.tradePermission === "blocked") return 0xff4444;
+  if (a.trend === "bullish") return 0x3fb950;
+  if (a.trend === "bearish") return 0xff7b72;
+  return 0x8b949e;
 }
 
-function signalEmoji(dir: "LONG" | "SHORT" | "FLAT", confidence: number): string {
-  if (confidence < 30) return "⬜";
-  if (dir === "LONG") return "🟢";
-  if (dir === "SHORT") return "🔴";
-  return "🟡";
+function sourceLabel(a: GoldAnalysis): string {
+  const primary = a.data.snapshot.primary;
+  const broker = a.data.snapshot.xauBrokerTick;
+  if (primary.source === "rithmic" && broker) return "Rithmic+Pepperstone";
+  if (primary.source === "rithmic") return "Rithmic";
+  if (primary.source === "yahoo") return "Yahoo fallback";
+  return primary.source;
 }
 
-function rsiTag(v: number | null): string {
-  if (v === null) return "—";
-  if (v > 70) return `${v.toFixed(1)} OB`;
-  if (v < 30) return `${v.toFixed(1)} OS`;
-  return v.toFixed(1);
+function stateLabel(a: GoldAnalysis): "LONG-PULLBACK" | "SHORT-REJECTION" | "RANGE-WATCH" | "NO-TRADE" {
+  if (a.eventRisk.tradePermission === "blocked") return "NO-TRADE";
+  if (a.data.sourceHealth.some((h) => h.source === a.data.snapshot.primary.source && h.qualityScore < 25)) {
+    return "NO-TRADE";
+  }
+  if (a.trend === "bullish" && a.signal.direction !== "FLAT") return "LONG-PULLBACK";
+  if (a.trend === "bearish" && a.signal.direction !== "FLAT") return "SHORT-REJECTION";
+  return "RANGE-WATCH";
 }
 
-function hurstTag(v: number | null): string {
-  if (v === null) return "—";
-  if (v > 0.6) return `${v.toFixed(2)} 趋势`;
-  if (v < 0.4) return `${v.toFixed(2)} 回归`;
-  return `${v.toFixed(2)} 随机`;
+function preferredAction(a: GoldAnalysis): string {
+  if (a.eventRisk.tradePermission === "blocked") return "No trade";
+  if (a.eventRisk.tradePermission === "watch-only") return "Watch only";
+  const state = stateLabel(a);
+  if (state === "LONG-PULLBACK") return "Long pullback watch";
+  if (state === "SHORT-REJECTION") return "Short rejection watch";
+  if (state === "RANGE-WATCH") return "Range watch";
+  return "No trade";
 }
 
-function vrTag(v: number | null): string {
-  if (v === null) return "—";
-  if (v > 1.15) return `${v.toFixed(2)} 持续`;
-  if (v < 0.85) return `${v.toFixed(2)} 反转`;
-  return `${v.toFixed(2)} 随机`;
+function sourceHealthText(a: GoldAnalysis): string {
+  return a.data.sourceHealth
+    .map((h) => `${h.source}:${h.qualityScore}${h.stale ? "/stale" : ""}`)
+    .join(",");
 }
 
-function tfIcon(aligned: boolean, trend: TrendDirection): string {
-  if (trend === "neutral") return "◽";
-  return aligned ? (trend === "bullish" ? "🟩" : "🟥") : "🟧";
+function eventLine(a: GoldAnalysis): string {
+  if (a.eventRisk.mode === "normal") return "Event Risk: normal";
+  const event = a.eventRisk.nearestEvent;
+  const eventName = event ? `${event.name} <t:${Math.floor(event.scheduledTimeMs / 1000)}:R>` : "high-impact event";
+  const mode =
+    a.eventRisk.mode === "pre-event" ? "WATCH ONLY"
+    : a.eventRisk.mode === "shock" ? "SHOCK MODE"
+    : "confirmation required";
+  return `Event Risk: ${eventName} -> ${mode}`;
 }
 
-// ---------------------------------------------------------------------------
-// Build Discord Embed — institutional-grade alert
-// ---------------------------------------------------------------------------
+function topDrivers(a: GoldAnalysis): string {
+  const drivers: Array<{ weight: number; line: string }> = [];
+  const macro = a.macroDrivers;
+  if (macro.realYieldPressure !== 0) {
+    drivers.push({
+      weight: Math.abs(macro.realYieldPressure),
+      line: `Real yield ${macro.realYieldPressure > 0 ? "down/soft: supports gold" : "up/firm: pressures gold"}`
+    });
+  }
+  if (macro.ratesPressure !== 0) {
+    drivers.push({
+      weight: Math.abs(macro.ratesPressure),
+      line: `Rates ${macro.ratesPressure > 0 ? "soft: supports gold" : "firm: pressures gold"}`
+    });
+  }
+  drivers.push({
+    weight: Math.abs(a.drivers.tfConfluence),
+    line: `Timeframe confluence ${a.tf.confluence.toFixed(2)}: ${a.tf.confluence > 0 ? "supports upside" : a.tf.confluence < 0 ? "supports downside" : "mixed"}`
+  });
+  drivers.push({
+    weight: Math.abs(a.drivers.vrBias),
+    line: `Variance ratio ${a.varianceRatio?.toFixed(2) ?? "n/a"}: ${a.drivers.vrBias > 0 ? "trend persistence" : "mean-reversion pressure"}`
+  });
+  drivers.push({
+    weight: Math.abs(a.drivers.zoneInfluence),
+    line: `Level/zone influence: ${a.drivers.zoneInfluence > 0 ? "supports gold" : a.drivers.zoneInfluence < 0 ? "pressures gold" : "neutral"}`
+  });
+  drivers.push({
+    weight: Math.abs(a.drivers.volatilityScore),
+    line: `Volatility ${volLabel(a.volRegime)}: ${a.volRegime === "high" || a.volRegime === "extreme" ? "requires confirmation" : "normal conditions"}`
+  });
+
+  return drivers
+    .sort((aDriver, bDriver) => bDriver.weight - aDriver.weight)
+    .slice(0, 5)
+    .map((driver) => `- ${driver.line}`)
+    .join("\n");
+}
+
+function levelStatus(a: GoldAnalysis, price: number): string {
+  const state = a.levelStates.find((level) => Math.abs(level.price - price) < 1);
+  return state?.status ?? "stale";
+}
+
+function keyLevels(a: GoldAnalysis): string {
+  const lines: string[] = ["```"];
+  for (const price of a.resistanceLevels.slice(0, 3).reverse()) {
+    lines.push(`R  ${price.toFixed(0).padStart(5)}  ${levelStatus(a, price)}`);
+  }
+  lines.push(`-- ${a.price.toFixed(0).padStart(5)}  now`);
+  for (const price of a.supportLevels.slice(0, 3)) {
+    lines.push(`S  ${price.toFixed(0).padStart(5)}  ${levelStatus(a, price)}`);
+  }
+  lines.push("```");
+  return lines.join("\n");
+}
+
+function setupField(a: GoldAnalysis): string {
+  const setupValid = a.eventRisk.tradePermission === "allowed" && stateLabel(a) !== "NO-TRADE";
+  const invalidation =
+    a.trend === "bullish" ? a.nearestSupport?.price
+    : a.trend === "bearish" ? a.nearestResistance?.price
+    : undefined;
+  const conditions = [
+    a.eventRisk.tradePermission === "allowed" ? "event gate clear" : `event gate=${a.eventRisk.tradePermission}`,
+    a.data.sourceHealth.some((h) => h.qualityScore < 60) ? "improve source quality" : "source quality acceptable",
+    Math.abs(a.tf.confluence) >= 0.5 ? "multi-timeframe aligned" : "need timeframe confirmation"
+  ];
+
+  const lines = [
+    `Preferred action: ${preferredAction(a)}`,
+    `Invalidation: ${invalidation !== undefined ? fp(invalidation) : "range break required"}`,
+    `Conditions needed: ${conditions.join("; ")}`
+  ];
+  if (setupValid && a.signal.targets.length > 0) {
+    lines.push(`Targets: ${a.signal.targets.slice(0, 2).map(fp).join(" / ")}`);
+  }
+  if (a.patternWatch) {
+    lines.push(`Pattern watch: H&S ${a.patternWatch.timeframe}, watch-only, unconfirmed by volume/backtest`);
+  }
+  return lines.join("\n");
+}
+
+function diagnostics(a: GoldAnalysis): string {
+  return [
+    `RSI(14): ${a.rsi14?.toFixed(1) ?? "n/a"}`,
+    `ATR(true): ${a.atr !== null ? fp(a.atr) : "n/a"}`,
+    `Realized vol: ${a.realizedVol !== null ? `${a.realizedVol.toFixed(2)}%` : "n/a"}`,
+    `VR(5): ${a.varianceRatio?.toFixed(2) ?? "n/a"}`,
+    `Hurst: ${a.hurst?.toFixed(2) ?? "n/a"}`,
+    `Breakout scores: up=${a.breakoutScoreUp.toFixed(2)} down=${a.breakoutScoreDown.toFixed(2)}`
+  ].join("\n");
+}
 
 export function buildDiscordPayload(
   a: GoldAnalysis,
@@ -92,236 +201,63 @@ export function buildDiscordPayload(
   sessionLabel?: string,
   triggerReason?: string
 ): Record<string, unknown> {
-  const sig = signalEmoji(a.signal.direction, a.confidence);
+  const sourceDegraded = a.data.sourceHealth.some((h) => h.qualityScore < 60);
+  const fallback = a.data.snapshot.primary.fallback;
+  const state = stateLabel(a);
+  const titleFlags = [
+    sourceDegraded ? "DATA DEGRADED" : null,
+    fallback ? "FALLBACK DATA" : null
+  ].filter(Boolean).join(" | ");
+  const titlePrefix = titleFlags ? `[${titleFlags}] ` : "";
+  const title = `${titlePrefix}XAU State | ${fp(a.price)} | ${state} | Evidence ${a.confidence}`;
 
-  // ── Title ──
-  const sourceTag = `${a.data.snapshot.primary.source}${a.data.snapshot.primary.fallback ? " fallback" : ""}`;
-  const title = `XAU State │ ${a.symbol} │ ${fp(a.price)} (${fPct(a.dailyChangePct)}) │ ${sig} ${a.signal.direction}`;
+  const gcHealth = a.data.sourceHealth.find((h) => h.source === a.data.snapshot.primary.source);
+  const brokerHealth = a.data.sourceHealth.find((h) => h.source === "pepperstone");
+  const spread = a.data.basis.brokerSpread !== undefined ? fp(a.data.basis.brokerSpread) : "unavailable";
+  const description = [
+    `Bias: ${state} | trend=${trendLabel(a.trend)} | regime=${regimeLabel(a.regime)} | change=${fPct(a.dailyChangePct)}`,
+    `Data: source=${sourceLabel(a)} | gc_age=${ageLabel(gcHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | xau_age=${ageLabel(brokerHealth?.ageMs ?? Number.POSITIVE_INFINITY)} | spread=${spread}`,
+    eventLine(a),
+    triggerReason ? `Trigger: ${triggerReason}` : null
+  ].filter(Boolean).join("\n");
 
-  // ── Description: signal + context ──
-  const desc: string[] = [];
-
-  desc.push(
-    `${sig} **${fRegime(a.regime)} │ ${fTrend(a.trend)} │ 动能${fMomentum(a.momentum)}** (证据强度 ${a.confidence})`
-  );
-
-  if (sessionLabel) {
-    desc.push(`**时段: ${sessionLabel}** │ 波动率: ${fVolRegime(a.volRegime)} │ source=${sourceTag}`);
-  }
-
-  if (triggerReason) {
-    desc.push(`> ⚡ **EVENT: ${triggerReason}**`);
-  }
-
-  if (a.eventRisk.mode !== "normal" && a.eventRisk.nearestEvent) {
-    const eventTs = Math.floor(a.eventRisk.nearestEvent.scheduledTimeMs / 1000);
-    const label =
-      a.eventRisk.mode === "pre-event" ? "WATCH ONLY"
-      : a.eventRisk.mode === "shock" ? "SHOCK MODE"
-      : "CONFIRMATION REQUIRED";
-    desc.push(`Event Risk: ${a.eventRisk.nearestEvent.name} <t:${eventTs}:R> → ${label}`);
-  }
-
-  if (a.currentZone) {
-    const zt = a.currentZone.type === "supply" ? "供给区" : a.currentZone.type === "demand" ? "需求区" : "过渡区";
-    desc.push(`📍 **所在区域: ${a.currentZone.label}** (${zt})`);
-  }
-
-  // Actionable signal block
-  if (a.signal.direction !== "FLAT") {
-    const dir = a.signal.direction === "LONG" ? "▲" : "▼";
-    desc.push("");
-    desc.push(`**${dir} 操作信号** (强度 ${a.signal.strength})`);
-    desc.push(
-      `入场 **${fp(a.signal.entry)}** │ 止损 **${fp(a.signal.stopLoss)}** │ R:R **${a.signal.riskReward.toFixed(1)}:1**`
-    );
-    if (a.signal.targets.length > 0) {
-      const tgtStr = a.signal.targets.map((t, i) => `T${i + 1} **${fpInt(t)}**`).join(" │ ");
-      desc.push(tgtStr);
-    }
-  }
-
-  desc.push("");
-  if (a.expectedMove !== null && a.expectedMove > 0) {
-    desc.push(`预期波动 **±${fp(a.expectedMove)}** │ 区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`);
-  } else {
-    desc.push(`区间 **${fp(a.expectedRange.min)} — ${fp(a.expectedRange.max)}**`);
-  }
-  desc.push(fTsFull(a.asOf));
-
-  // ── Field 1: Multi-Timeframe Alignment ──
-  const tfLines: string[] = [
-    "```",
-    " TF    信号    RSI    EMA   动能",
-    " ──── ────── ────── ──── ──────",
-  ];
-
-  // 15m
-  tfLines.push(
-    ` 15M   ${fTrend(a.tf.m15.trend).padEnd(5)}  ${(a.tf.m15.rsi?.toFixed(1) ?? "  —").padStart(5)}  ${a.tf.m15.emaAligned ? " ✓ " : " ✗ "}  ${a.tf.m15.momentum > 0 ? "+" : ""}${a.tf.m15.momentum.toFixed(1)}σ`
-  );
-  // 5m
-  tfLines.push(
-    ` 5M    ${fTrend(a.tf.m5.trend).padEnd(5)}  ${(a.tf.m5.rsi?.toFixed(1) ?? "  —").padStart(5)}  ${a.tf.m5.emaAligned ? " ✓ " : " ✗ "}  ${a.tf.m5.momentum > 0 ? "+" : ""}${a.tf.m5.momentum.toFixed(1)}σ`
-  );
-
-  const confLevel = Math.abs(a.tf.confluence);
-  const confLabel = confLevel > 0.6 ? "强共振" : confLevel > 0.3 ? "弱共振" : "分歧";
-  tfLines.push(` ──── ────── ────── ──── ──────`);
-  tfLines.push(` 共振: ${a.tf.confluence > 0 ? "+" : ""}${a.tf.confluence.toFixed(2)} (${confLabel})`);
-  tfLines.push("```");
-
-  // ── Field 2: Key Levels Ladder ──
-  const ladder: string[] = ["```"];
-
-  // Resistances (top to bottom, max 3)
-  const rLevels = a.resistanceLevels.slice(0, 3).reverse();
-  for (let i = 0; i < rLevels.length; i++) {
-    const lvl = rLevels[i];
-    const level = findLevelInfo(lvl);
-    const tag = level ? ` ${level.label.split("-")[0]}` : "";
-    const magnetMark = a.magnetLevel && Math.abs(a.magnetLevel.price - lvl) < 1 ? " ★" : "";
-    ladder.push(` R${rLevels.length - i}  $${lvl.toFixed(0).padStart(5)}${tag}${magnetMark}`);
-  }
-
-  ladder.push(` ─── $${a.price.toFixed(0).padStart(5)}  NOW ───`);
-
-  // Supports (top to bottom, max 3)
-  const sLevels = a.supportLevels.slice(0, 3);
-  for (let i = 0; i < sLevels.length; i++) {
-    const lvl = sLevels[i];
-    const level = findLevelInfo(lvl);
-    const tag = level ? ` ${level.label.split("-")[0]}` : "";
-    const magnetMark = a.magnetLevel && Math.abs(a.magnetLevel.price - lvl) < 1 ? " ★" : "";
-    ladder.push(` S${i + 1}  $${lvl.toFixed(0).padStart(5)}${tag}${magnetMark}`);
-  }
-  ladder.push("```");
-
-  // ── Field 3: Quant Dashboard ──
-  const qRows: [string, string, string, string][] = [
-    ["RSI(14)", rsiTag(a.rsi14), "Hurst", hurstTag(a.hurst)],
-    ["RVol", a.realizedVol !== null ? `${a.realizedVol.toFixed(2)}%` : "—", "VR(5)", vrTag(a.varianceRatio)],
-    ["Z-Score", a.zScore !== null ? fSigned(a.zScore) : "—", "ACF(1)", a.autocorrelation !== null ? a.autocorrelation.toFixed(3) : "—"],
-    ["ATR", a.atr !== null ? fp(a.atr) : "—", "KAMA", a.kamaPrice !== null ? fpInt(a.kamaPrice) : "—"],
-    ["Score↑", a.breakoutScoreUp.toFixed(2), "Score↓", a.breakoutScoreDown.toFixed(2)],
-    ["R:R多", `${a.rrLong.toFixed(1)}:1`, "R:R空", `${a.rrShort.toFixed(1)}:1`],
-  ];
-
-  const col1W = Math.max(...qRows.map(r => r[0].length));
-  const col2W = Math.max(...qRows.map(r => r[1].length));
-  const col3W = Math.max(...qRows.map(r => r[2].length));
-  const col4W = Math.max(...qRows.map(r => r[3].length));
-
-  const qTable = [
-    "```",
-    ...qRows.map(([a, b, c, d]) =>
-      ` ${a.padEnd(col1W)}  ${b.padStart(col2W)}  │  ${c.padEnd(col3W)}  ${d.padStart(col4W)}`
-    ),
-    "```"
+  const stateSummary = [
+    `Macro regime: ${a.macroDrivers.macroBias}`,
+    `Futures flow: ${trendLabel(a.trend)} / tf=${a.tf.confluence.toFixed(2)}`,
+    `Volatility: ${volLabel(a.volRegime)}`,
+    `Session: ${sessionLabel ?? "n/a"}`,
+    `Trade permission: ${a.eventRisk.tradePermission}`
   ].join("\n");
 
-  // ── Field 4: Delta vs Previous ──
-  let deltaField: string | null = null;
+  let delta = "";
   if (prev) {
-    const priceShift = a.price - prev.price;
-    const dLines: string[] = [
-      "```",
-      ` Price  ${fSigned(priceShift)} (${prev.price.toFixed(0)} → ${a.price.toFixed(0)})`,
-      ` Trend  ${fTrend(prev.trend)} → ${fTrend(a.trend)}`,
-      ` Regime ${fRegime(prev.regime)} → ${fRegime(a.regime)}`,
-      ` Evidence ${prev.confidence} → ${a.confidence}`,
-      "```"
-    ];
-    deltaField = dLines.join("\n");
+    delta = `\nPrevious: price ${fSigned(a.price - prev.price)}, trend ${prev.trend}->${a.trend}, evidence ${prev.confidence}->${a.confidence}`;
   }
 
-  // ── Assemble embed fields ──
-  const fields: Array<{ name: string; value: string; inline?: boolean }> = [];
-
-  fields.push({ name: "📊 时间框架共振", value: tfLines.join("\n") });
-  fields.push({ name: "📍 关键价位", value: ladder.join("\n") });
-  fields.push({ name: "🔬 量化仪表盘", value: qTable });
-
-  if (deltaField) {
-    fields.push({ name: "Δ 上次播报", value: deltaField });
-  }
-
-  // BB squeeze warning
-  if (a.bbWidth !== null && a.bbWidth < 0.3) {
-    fields.push({
-      name: "⚠ 布林挤压",
-      value: `BB宽度 ${a.bbWidth.toFixed(3)}% — **潜在突破**\n%B: ${a.bbPercentB?.toFixed(2) ?? "—"}`
-    });
-  }
-
-  // H&S pattern alert
-  if (a.patternWatch) {
-    const p = a.patternWatch;
-    const dir = p.type === "bearish" ? "🔻 头肩顶 (看跌)" : "🔺 头肩底 (看涨)";
-    const phaseLabel = p.phase === "confirmed" ? "✅ 已确认突破" : "⏳ 形成中";
-    const tfLabel = { "1m": "1分钟", "5m": "5分钟", "15m": "15分钟" }[p.timeframe];
-
-    const hsLines: string[] = [
-      `**${dir}** │ ${tfLabel}级别 │ ${phaseLabel}`,
-      "```",
-      ` 左肩  $${p.leftShoulder.toFixed(0)}`,
-      ` 头部  $${p.head.toFixed(0)}`,
-      ` 右肩  $${p.rightShoulder.toFixed(0)}`,
-      ` 颈线  $${p.neckline.toFixed(0)}`,
-      ` 目标  $${p.target.toFixed(0)} (测量幅度)`,
-      ` ──────────────────────`,
-      ` 对称度 ${p.symmetry.toFixed(0)}%  颈线质量 ${p.necklineQuality.toFixed(0)}%`,
-      ` 综合质量 ${p.quality.toFixed(0)}%  观察分 ${p.watchScore.toFixed(0)}`,
-      ` 形态仅观察，未经过成交量/回测确认`,
-      "```"
-    ];
-
-    fields.push({
-      name: `📐 形态识别 (${tfLabel})`,
-      value: hsLines.join("\n")
-    });
-  }
-
-  // ── Footer — machine-readable diagnostic ──
   const footer = [
-    `evidence=${a.confidence}`,
-    `regime=${a.regime}`,
-    `vol=${a.volRegime}`,
-    `rsi=${a.rsi14?.toFixed(0) ?? "-"}`,
-    `atr=${a.atr?.toFixed(1) ?? "-"}`,
-    `vr=${a.varianceRatio?.toFixed(2) ?? "-"}`,
-    `hurst=${a.hurst?.toFixed(2) ?? "-"}`,
-    `nmom=${a.normalizedMomentum?.toFixed(1) ?? "-"}`,
-    `tf=${a.tf.confluence.toFixed(2)}`,
-    `buf=${a.bufferSize}/${a.bufferDurationMin.toFixed(0)}m`,
-    `source=${sourceTag}`,
-    `health=${a.data.sourceHealth.map((h) => `${h.source}:${h.qualityScore}${h.stale ? " stale" : ""}`).join(",")}`,
-  ].join(" │ ");
+    "model=xau_state_v2",
+    "scores=uncalibrated",
+    `sourceHealth=${sourceHealthText(a)}`,
+    `barCoverage=1m:${a.data.barCoverage.m1},5m:${a.data.barCoverage.m5},15m:${a.data.barCoverage.m15},1h:${a.data.barCoverage.h1}`,
+    `eventGate=${a.eventRisk.mode}`
+  ].join(" | ");
 
   return {
     embeds: [{
-      title,
-      description: desc.join("\n"),
-      color: embedColor(a.regime, a.trend),
-      fields,
-      footer: { text: footer },
+      title: truncate(title, 256),
+      description: truncate(description, 1900),
+      color: embedColor(a),
+      fields: [
+        { name: "State Summary", value: truncate(stateSummary + delta) },
+        { name: "Driver Attribution", value: truncate(topDrivers(a)) },
+        { name: "Key Levels", value: truncate(keyLevels(a)) },
+        { name: "Setup", value: truncate(setupField(a)) },
+        { name: "Quant Diagnostics", value: truncate(diagnostics(a)) }
+      ],
+      footer: { text: truncate(footer, 1900) }
     }]
   };
 }
-
-// ---------------------------------------------------------------------------
-// Helper — find level info by price
-// ---------------------------------------------------------------------------
-
-import { LEVELS } from "../levels/grid.js";
-
-function findLevelInfo(price: number) {
-  return LEVELS.find(l => Math.abs(l.price - price) < 1) ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// Publish
-// ---------------------------------------------------------------------------
 
 export async function publishToDiscord(
   config: RuntimeConfig,
