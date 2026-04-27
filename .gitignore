@@ -2,3 +2,5 @@ node_modules/
 dist/
 .runtime/
 .env
+.env.sidecar
+sidecars/**/*.env

@@ -5,11 +5,14 @@
   "type": "module",
   "description": "Quantitative XAUUSD analysis Discord broadcaster with static level grid and multi-factor scoring.",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.sidecars.json",
     "start": "npm run build && node --env-file-if-exists=.env dist/main.js",
     "dev": "npm run start",
     "dry-run": "npm run build && node --env-file-if-exists=.env dist/cli/dry-run.js",
     "research": "npm run build && node --env-file-if-exists=.env dist/cli/research-report.js",
+    "sidecar:pepperstone": "npm run build && node --env-file-if-exists=/quant/calc/config/xau-sidecars.env dist/sidecars/pepperstone/pepperstone-xau-sidecar.js",
+    "sidecar:tradovate": "npm run build && node --env-file-if-exists=/quant/calc/config/xau-sidecars.env dist/sidecars/tradovate/tradovate-gc-sidecar.js",
+    "check:ingest": "npm run build && node --env-file-if-exists=/quant/calc/config/xau-sidecars.env dist/scripts/check-data-ingest.js",
     "test": "npm run build && node --test --test-isolation=none dist/runtime/market-hours.test.js dist/data/bar-builder.test.js dist/events/event-calendar.test.js dist/analysis/score-semantics.test.js dist/discord/source-health.test.js"
   },
   "dependencies": {
