@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Quant Version Family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service_version", "schema_version", "model_version", "strategy_version", "factor_registry_version", "card_schema_version", "config_schema_version", "data_contract_version", "prompt_version", "data_snapshot_id"],
+  "properties": {
+    "service_version": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "model_version": {"type": "string"},
+    "strategy_version": {"type": "string"},
+    "factor_registry_version": {"type": "string"},
+    "card_schema_version": {"type": "string"},
+    "config_schema_version": {"type": "string"},
+    "data_contract_version": {"type": "string"},
+    "prompt_version": {"type": ["string", "null"]},
+    "data_snapshot_id": {"type": ["string", "null"]}
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "service_version": "0.1.0",
+  "schema_version": "0.1.0",
+  "model_version": "0.1.0",
+  "strategy_version": "0.1.0",
+  "factor_registry_version": "0.1.0",
+  "card_schema_version": "0.1.0",
+  "config_schema_version": "0.1.0",
+  "data_contract_version": "0.1.0",
+  "prompt_version": null,
+  "data_snapshot_id": null
+}

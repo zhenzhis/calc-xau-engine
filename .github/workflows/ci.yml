@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  discovery-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node when package.json exists
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Node discovery checks
+        if: ${{ hashFiles('package.json') != '' }}
+        shell: pwsh
+        run: |
+          $pkg = Get-Content -Raw package.json | ConvertFrom-Json
+          if (Test-Path package-lock.json) { npm ci }
+          foreach ($script in @('build','test','lint','typecheck','secret-scan')) {
+            if ($pkg.scripts.PSObject.Properties.Name -contains $script) { npm run $script } else { Write-Host "optional npm script missing: $script" }
+          }
+
+      - name: Setup Python when pyproject exists
+        if: ${{ hashFiles('pyproject.toml') != '' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python discovery checks
+        if: ${{ hashFiles('pyproject.toml') != '' }}
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          $pyproject = Get-Content -Raw pyproject.toml
+          if ($pyproject -match '\[tool\.ruff\]') { python -m ruff check . }
+          if ($pyproject -match '\[tool\.mypy\]') { python -m mypy }
+          if ($pyproject -match '\[tool\.pytest\.ini_options\]') { python -m pytest }
