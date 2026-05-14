@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Factor Registry Entry",
+  "type": "object",
+  "required": ["factor_id", "name", "asset_class", "instrument_scope", "category", "owner", "status", "version", "description", "inputs", "output", "failure_modes", "validation", "allowed_output_language", "forbidden_output_language"],
+  "properties": {
+    "factor_id": {"type": "string"},
+    "name": {"type": "string"},
+    "owner": {"type": "string"},
+    "asset_class": {"type": "string"},
+    "instrument_scope": {"type": "array", "items": {"type": "string"}},
+    "category": {"type": "string"},
+    "sub_category": {"type": "string"},
+    "status": {"enum": ["idea", "research", "candidate", "shadow", "legacy_observed", "legacy_production_unvalidated", "production", "deprecated", "quarantined", "experimental"]},
+    "version": {"type": "string"},
+    "description": {"type": "string"},
+    "inputs": {"type": "array"},
+    "output": {"type": "object"},
+    "failure_modes": {"type": "array", "items": {"type": "string"}},
+    "validation": {"type": "object"},
+    "allowed_output_language": {"type": "array", "items": {"type": "string"}},
+    "forbidden_output_language": {"type": "array", "items": {"type": "string"}}
+  }
+}

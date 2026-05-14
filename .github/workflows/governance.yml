@@ -1,0 +1,27 @@
+name: Governance
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  governance:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hard safety gates and maturity report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          if (-not (Test-Path 'AGENTS.md')) { Write-Error 'AGENTS.md missing in canonical active repository'; $failed = $true }
+          if ((Test-Path 'Agent.md') -and -not (Test-Path 'AGENTS.md')) { Write-Error 'Agent.md exists without AGENTS.md migration'; $failed = $true }
+          $tracked = git ls-files
+          $blocked = $tracked | Where-Object { $_ -match '(^|/)(\.env($|\.(local|production|development|staging|sidecar|secret|private)$)|env-backups/|.*\.sqlite3?$|.*\.db$|.*\.log$|\.runtime/|dist/|build/|coverage/|node_modules/|data/(raw|artifacts|cache|runtime|logs|dumps)/)' }
+          if ($blocked) { $blocked | ForEach-Object { Write-Error "blocked tracked artifact: $_" }; $failed = $true }
+          if (Test-Path 'quant.version.json') { try { Get-Content -Raw 'quant.version.json' | ConvertFrom-Json | Out-Null } catch { Write-Error "invalid quant.version.json: $($_.Exception.Message)"; $failed = $true } } else { Write-Host 'maturity warning: quant.version.json missing' }
+          foreach ($p in @('CHANGELOG.md','.github/PULL_REQUEST_TEMPLATE.md','.github/CODEOWNERS')) { if (-not (Test-Path $p)) { Write-Host "maturity warning: missing $p" } }
+          if (Test-Path 'scripts/governance/check-runtime-artifacts.ps1') { pwsh -NoProfile -File 'scripts/governance/check-runtime-artifacts.ps1' -Root (Get-Location).Path -ReportOnly }
+          if ($failed) { exit 1 }

@@ -1,0 +1,48 @@
+factor_id: xau.structure.score
+name: XAU Structure Score
+asset_class: metals
+instrument_scope:
+  - observed current repository scope
+category: price_structure
+sub_category: multi_factor_score
+owner: research
+status: legacy_production_unvalidated
+version: 0.1.0
+
+description: >
+  Transitional registry entry for an existing production-affecting signal. This is observed behavior, not institutional validation.
+
+inputs:
+  - provider: existing_repository_pipeline
+    endpoint: not_yet_formalized
+    freshness_sla_seconds: null
+
+output:
+  type: not_yet_formalized
+  calibrated_probability: false
+  higher_means: not_yet_formalized
+
+failure_modes:
+  - missing_data_behavior_not_yet_formalized
+  - stale_data_behavior_not_yet_formalized
+  - provider_outage_behavior_not_yet_formalized
+
+validation:
+  required:
+    - schema_validation
+    - replay_test
+    - missing_data_behavior
+    - stale_data_behavior
+    - provider_outage_behavior
+    - snapshot_test
+  optional:
+    - regime_split_report
+    - sensitivity_analysis
+
+allowed_output_language:
+  - research_observation
+  - risk_state
+forbidden_output_language:
+  - trade_instruction
+  - guaranteed_probability
+  - hedge_instruction
